@@ -136,7 +136,7 @@ ante update --channel nightly
 </tr>
 </table>
 
-[See all cookbook guides](https://docs.antigma.ai/category/tui-cookbook)
+[See all cookbook guides](https://docs.antigma.ai/cookbook/login)
 
 ## Architecture
 
@@ -154,7 +154,7 @@ ante update --channel nightly
 ┌─────────────────────────────────────────────────────────────┐
 │                         Daemon                              │
 │                                                             │
-│   Session ──▶ Turn ──▶ Step                                 │
+│   Session ──▶ Turn ──▶ Step                                │
 │                                                             │
 │   ┌──────────┐  ┌──────────────┐  ┌───────────────────┐     │
 │   │  Tools   │  │  Permission  │  │  Skills / Agents  │     │
