@@ -62,6 +62,7 @@ const sidebars: SidebarsConfig = {
         'reference/cli-reference',
         'reference/protocol-reference',
         'reference/tools-reference',
+        'reference/storage-reference',
       ],
     },
   ],

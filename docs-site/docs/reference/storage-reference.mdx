@@ -1,0 +1,125 @@
+---
+title: "Storage Reference"
+description: "Filesystem locations where Ante stores configuration and state"
+---
+
+Ante persists configuration and state on the local filesystem. This page is a reference for every location Ante reads or writes.
+
+## Locations
+
+| Location | Purpose |
+|---|---|
+| `~/.ante/settings.json` | User preferences (model, provider, theme, MCP servers) |
+| `~/.ante/catalog.json` | Custom provider/model catalog |
+| `~/.ante/skills/` | User-level skills |
+| `~/.ante/agents/` | User-level sub-agents |
+| `~/.ante/sessions/<session-id>/` | Persisted sessions (for `/resume` and `--resume`) |
+| `~/.ante/projects/<project-id>/memory/` | Per-project auto-memory |
+| `~/.ante/cache/<project-id>/` | Per-project temporary files |
+| `.ante/` | Project-local configuration (skills, sub-agents) |
+| `.agents/`, `.claude/` | Additional project-local skill/sub-agent directories |
+
+`<project-id>` is a sanitized form of the project's absolute path. The `ANTE_HOME` environment variable overrides `~/.ante`.
+
+## `settings.json`
+
+Stores user preferences. All fields are optional.
+
+```json
+{
+  "model": "claude-sonnet-4-6",
+  "provider": "anthropic",
+  "theme": "default",
+  "policy": "default",
+  "channel": "stable",
+  "has_completed_onboarding": true,
+  "status_line": ["model-name", "current-dir"],
+  "model_thinking": {
+    "claude-sonnet-4-6": "Enabled",
+    "gpt-5.4": "Deep"
+  },
+  "mcp_servers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    }
+  }
+}
+```
+
+See [Preferences](/configuration/preference) for the full field reference and the precedence rules between this file, environment variables, and CLI flags.
+
+## `catalog.json`
+
+Adds or overrides providers and models on top of the built-in catalog. Both top-level keys are optional.
+
+```json
+{
+  "providers": {
+    "my-provider": {
+      "name": "my-provider",
+      "display_name": "My Provider",
+      "base_url": "https://api.example.com/v1",
+      "auth": { "bearer": { "env_key": "MY_PROVIDER_API_KEY" } },
+      "wire_style": "OpenAiCompatible"
+    }
+  },
+  "models": {
+    "my-model": {
+      "name": "my-model",
+      "description": "Custom model",
+      "max_tokens": 32000,
+      "context_limit": 200000,
+      "thinking": "Enabled"
+    }
+  }
+}
+```
+
+Supported `wire_style`: `AnthropicMessage`, `OpenAiCompatible`, `OpenAiResponse`, `Gemini`.
+Supported `thinking`: `Disabled`, `Enabled`, `Deep`, `Max`.
+
+See [Providers](/configuration/providers) for catalog details and provider-specific examples.
+
+## Layout
+
+### User-level (`~/.ante/`)
+
+```
+~/.ante/
+├── settings.json       # User preferences
+├── catalog.json        # Custom provider/model catalog
+├── skills/             # User-level skills
+├── agents/             # User-level sub-agents
+├── sessions/           # Persisted sessions (for /resume)
+├── projects/           # Per-project state (memory, etc.)
+│   └── <project-id>/
+│       └── memory/
+│           └── MEMORY.md
+└── cache/              # Per-project temporary files
+    └── <project-id>/
+```
+
+### Project-local
+
+```
+.ante/
+├── skills/             # Project-specific skills
+└── agents/             # Project-specific sub-agents
+
+.agents/
+├── skills/             # Project-specific skills
+└── agents/             # Project-specific sub-agents
+
+.claude/
+├── skills/             # Project-specific skills (Claude Code compatibility)
+└── agents/             # Project-specific sub-agents (Claude Code compatibility)
+```
+
+## Related
+
+- [Preferences](/configuration/preference) — full `settings.json` reference and environment variables
+- [Providers](/configuration/providers) — `catalog.json` schema and provider IDs
+- [Skills](/extend/skills) — skill directory layout
+- [Sub-agents](/extend/subagents) — sub-agent directory layout
+- [Memory](/extend/memory) — auto-memory format
