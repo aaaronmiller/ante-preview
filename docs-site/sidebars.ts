@@ -38,7 +38,7 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Extensibility',
-      items: ['extend/skills', 'extend/subagents', 'extend/mcp', 'extend/memory'],
+      items: ['extend/skills', 'extend/subagents', 'extend/mcp', 'extend/agents-md', 'extend/memory'],
     },
     {
       type: 'category',

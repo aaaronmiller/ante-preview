@@ -11,11 +11,13 @@ Ante persists configuration and state on the local filesystem. This page is a re
 |---|---|
 | `~/.ante/settings.json` | User preferences (model, provider, theme, MCP servers) |
 | `~/.ante/catalog.json` | Custom provider/model catalog |
+| `~/.ante/AGENTS.md` | Global instructions injected into every project session |
 | `~/.ante/skills/` | User-level skills |
 | `~/.ante/agents/` | User-level sub-agents |
 | `~/.ante/sessions/<session-id>/` | Persisted sessions (for `/resume` and `--resume`) |
 | `~/.ante/projects/<project-id>/memory/` | Per-project auto-memory |
 | `~/.ante/cache/<project-id>/` | Per-project temporary files |
+| `AGENTS.md` | Project instructions injected alongside global instructions |
 | `.ante/` | Project-local configuration (skills, sub-agents) |
 | `.agents/`, `.claude/` | Additional project-local skill/sub-agent directories |
 
@@ -79,7 +81,15 @@ Adds or overrides providers and models on top of the built-in catalog. Both top-
 Supported `wire_style`: `AnthropicMessage`, `OpenAiCompatible`, `OpenAiResponse`, `Gemini`.
 Supported `thinking`: `Disabled`, `Enabled`, `Deep`, `Max`.
 
+Malformed provider or model entries are skipped individually and reported at startup. Valid entries in the same file still load.
+
 See [Providers](/configuration/providers) for catalog details and provider-specific examples.
+
+## `AGENTS.md`
+
+Stores persistent instructions for the agent. `~/.ante/AGENTS.md` applies globally, and a project `AGENTS.md` applies to that repository. When both exist, Ante includes both in the first user message of a session.
+
+See [AGENTS.md](/extend/agents-md) for usage guidance and precedence details.
 
 ## Layout
 
@@ -89,6 +99,7 @@ See [Providers](/configuration/providers) for catalog details and provider-speci
 ~/.ante/
 ├── settings.json       # User preferences
 ├── catalog.json        # Custom provider/model catalog
+├── AGENTS.md           # Global instructions
 ├── skills/             # User-level skills
 ├── agents/             # User-level sub-agents
 ├── sessions/           # Persisted sessions (for /resume)
@@ -103,6 +114,8 @@ See [Providers](/configuration/providers) for catalog details and provider-speci
 ### Project-local
 
 ```
+AGENTS.md               # Project instructions
+
 .ante/
 ├── skills/             # Project-specific skills
 └── agents/             # Project-specific sub-agents

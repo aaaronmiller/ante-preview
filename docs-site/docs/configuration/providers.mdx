@@ -88,10 +88,10 @@ Available models: `claude-haiku-4-5`, `claude-sonnet-4-5`, `claude-sonnet-4-6`, 
 ### OpenAI
 
 ```bash
-ante --provider openai --model gpt-5.4
+ante --provider openai --model gpt-5.5
 ```
 
-Available models: `gpt-5.4`, `gpt-5.4-pro`, `gpt-5.3-codex`, `gpt-5-mini`, `gpt-5-nano`
+Available models: `gpt-5.5`, `gpt-5.4`, `gpt-5.4-pro`, `gpt-5.3-codex`, `gpt-5-mini`, `gpt-5-nano`
 
 #### OpenAI transports
 
@@ -256,6 +256,8 @@ Create `~/.ante/catalog.json` to add or override providers and models:
 Supported wire styles: `AnthropicMessage`, `OpenAiCompatible`, `OpenAiResponse`, `Gemini`.
 
 Supported thinking modes: `Disabled`, `Enabled`, `Deep`, `Max`.
+
+Malformed provider or model entries are skipped individually and shown in the startup notice. Other valid entries in the same `catalog.json` still load.
 
 ## Third-party & custom providers
 
