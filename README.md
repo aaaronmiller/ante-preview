@@ -258,7 +258,7 @@ ante -p "find and fix the failing test in src/auth"
 git diff | ante -p "review this for security issues"
 
 # Use a different provider
-ante --provider openai --model gpt-5.4 -p "refactor the database module"
+ante --provider openai --model gpt-5.5 -p "refactor the database module"
 
 # Resume a saved session
 ante --resume ses_01ARZ3NDEKTSV4RRFFQ69G5FAV -p "now add tests"
@@ -326,7 +326,7 @@ ante update --channel nightly
 </tr>
 </table>
 
-[See all cookbook guides](https://docs.antigma.ai/category/tui-cookbook)
+[See all cookbook guides](https://docs.antigma.ai/cookbook/login)
 
 ## Architecture
 
@@ -344,7 +344,7 @@ ante update --channel nightly
 ┌─────────────────────────────────────────────────────────────┐
 │                         Daemon                              │
 │                                                             │
-│   Session ──▶ Turn ──▶ Step                                 │
+│   Session ──▶ Turn ──▶ Step                                │
 │                                                             │
 │   ┌──────────┐  ┌──────────────┐  ┌───────────────────┐     │
 │   │  Tools   │  │  Permission  │  │  Skills / Agents  │     │
@@ -421,18 +421,6 @@ Yes. Create a `~/.ante/catalog.json` file to add or override providers and model
 <summary><b>What is the <code>ante serve</code> mode for?</b></summary>
 
 Server mode runs Ante as a long-lived daemon that communicates over a structured JSONL protocol. It's ideal for building editor plugins, web UIs, and custom integrations on top of Ante.
-</details>
-
-<details>
-<summary><b>How do I configure Ante?</b></summary>
-
-Settings live in `~/.ante/settings.json`. You can set your default model, provider, theme, and permission policy. CLI flags override settings for individual sessions. See the [configuration docs](https://docs.antigma.ai/configuration/preference) for details.
-</details>
-
-<details>
-<summary><b>Can I extend Ante with custom skills or sub-agents?</b></summary>
-
-Yes. Drop skill files in `~/.ante/skills/` (user-level) or `.ante/skills/` (project-level) using the Open Agent Skills format. Custom sub-agents go in `~/.ante/agents/` with their own prompts, tool sets, and model overrides.
 </details>
 
 ## Documentation

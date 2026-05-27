@@ -84,6 +84,7 @@ Settings can be overridden per-session via CLI flags.
 | `ANTE_LOCAL_PROVIDER_PORT` | Override the local provider port (default: 8080) |
 | `ANTE_HOME` | Override the home config directory (default: `~/.ante`) |
 | `ANTE_DISABLE_STREAMING` | Disable streaming responses in TUI mode |
+| `ANTE_OPENAI_TRANSPORT` | OpenAI Responses transport: `http_sse` (default) or `websocket_auto` (see [OpenAI transports](./providers#openai-transports)) |
 
 ## Directory structure
 
@@ -93,6 +94,7 @@ Settings can be overridden per-session via CLI flags.
 ~/.ante/
 ├── settings.json      # User preferences
 ├── catalog.json       # Custom provider/model catalog
+├── AGENTS.md          # Global instructions
 ├── sessions/          # Persisted sessions (for /resume)
 ├── skills/            # User-level skills
 └── agents/            # User-level sub-agents
@@ -101,6 +103,8 @@ Settings can be overridden per-session via CLI flags.
 ### Project-level
 
 ```
+AGENTS.md              # Project instructions
+
 .ante/
 ├── skills/            # Project-specific skills
 └── agents/            # Project-specific sub-agents

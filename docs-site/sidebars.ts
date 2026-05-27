@@ -38,7 +38,7 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Extensibility',
-      items: ['extend/skills', 'extend/subagents', 'extend/mcp', 'extend/memory'],
+      items: ['extend/skills', 'extend/subagents', 'extend/mcp', 'extend/agents-md', 'extend/memory'],
     },
     {
       type: 'category',
@@ -62,6 +62,7 @@ const sidebars: SidebarsConfig = {
         'reference/cli-reference',
         'reference/protocol-reference',
         'reference/tools-reference',
+        'reference/storage-reference',
       ],
     },
   ],

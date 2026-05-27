@@ -46,6 +46,16 @@
 - Hooks write to `~/.ante/memory/ante-memory.db` and `~/.ante/run/*.log` for audit trail
 - All 184 tests pass (24 protocol-shape + 120 agent-sdk + 29 exec + 11 ante)
 
+## v0.preview.27 - 2026-05-19
+
+- Add OpenAI Responses WebSocket transport (opt-in)
+- Show OpenAI transport in debug panel info tab
+- Improve tool call failure logging
+- Optimize directory tree traversal
+- Tighten OpenAI Response API streaming
+- Normalize blank Grep file type
+- Dependency updates
+
 ## v0.preview.26 - 2026-05-13
 
 - Animate the `/compact` info block header while compaction runs
