@@ -2,6 +2,7 @@ use std::sync::{Mutex, MutexGuard};
 
 pub mod buffer;
 pub mod handle;
+pub mod mcp_manager;
 pub mod pool;
 pub mod process_group;
 pub mod receiver;
@@ -9,6 +10,9 @@ pub mod subprocess;
 
 pub use buffer::HeadTailBuffer;
 pub use handle::{OutputChunk, ProcessHandle, SpawnedProcess, Stream};
+pub use mcp_manager::{
+    ManagedProcess, ManagedProcessConfig, ProcessManager, ProcessState,
+};
 pub use pool::{
     ExecError, ExecRequest, ExecResponse, PollRequest, PoolConfig, ProcessPool, StdinRequest,
 };

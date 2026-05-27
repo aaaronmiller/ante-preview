@@ -1,5 +1,51 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Hook system: Event types, payloads, decision pipeline, hook registry (PreToolUse/PostToolUse/PermissionRequest)
+- Command hooks: Shell script hooks with JSON event piping, timeout, exit code mapping
+- Prompt hooks: LLM-based hook executor stub with response parsing
+- Settings system: `~/.ante/settings.json` loader with Claude Code compat merge
+- Context budget tracker: Token/cost tracking with warnings and limits
+- First-run init: Creates `~/.ante/` directory structure, installs blocklist hook, writes default settings
+- Blocklist hook: Shell script blocking dangerous patterns (`rm -rf /`, `sudo`, `chmod 777`, `dd if=` etc.)
+- MCP client: Full stdio transport with JSON-RPC 2.0, initialize handshake, tools/list, tools/call
+- MCP tool registry: `McpToolRegistry` with `mcp__{server}__{tool}` namespace and `McpToolId` parsing
+- MCP integration test: Python MCP server fixture with tool discovery/invocation verification
+- Sub-agent loader: YAML frontmatter parser (no dep), keyword-overlap scoring, `AgentRegistry`
+- Task decomposer: Request splitting on conjunctions with sequential dependency chaining
+- Task dispatcher: `execute_task_graph` stub with result synthesis formatter
+- Memory store: JSON file-backed `MemoryStore` with add, search, get_context; nanosecond ULID timestamps
+- Memory server: `MemoryServer` wrapper with MCP-like methods
+- Diagram renderer: Mermaid flowchart/sequence → ASCII (box-drawing chars, arrow symbols)
+- Todo list: JSON-backed `TodoList` with add/complete/list/clear_done/delete, sequential IDs
+- Model router: Rule-based classifier with capability/cost scoring, `ModelPoolEntry`, 8 unit tests
+- HITL approval: `ApprovalManager` with 5-tier risk classification, pending queue, approve/deny/timeout
+- 95 unit tests across all new modules
+- Integration binary: `crates/ante/` — merges all agent-sdk components into a single binary crate
+- Agent context: `AgentContext` struct with EventBus, HookRegistry, McpToolRegistry, ModelRouter, MemoryStore, ApprovalManager, BudgetTracker
+- Claude CLI integration: `Claude::connect()` with options for model, system prompt, permission mode, allowed/disallowed tools
+- Event wiring: SessionStart, SessionEnd, UserPromptSubmit, PermissionRequest events emitted through EventBus in agent loop
+- HITL approval loop: `check_hitl()` intercepts ControlRequest messages, classifies risk, blocks for user approve/deny
+- Status bar: `StatusBar` with context usage bar, model name, session cost, elapsed time, MCP/memory/agent counts, HITL risk level
+- ASCII startup banner: Geometric "ANTE" logo with feature summary grid showing hooks/MCP/agents/memories
+- Double-row status mode: Two-line layout like gemini-cli's refreshed UX (model + context on row 1, metrics on row 2)
+- Usage docs: README section with full command reference, status bar field descriptions, REPL commands, configuration guide
+- Model routing: `ModelRouter::select()` called on both REPL and query modes, selected model passed to ClaudeOptions
+- Memory context injection: `get_memory_context()` retrieves project-scoped memories, injected into append_system_prompt
+- MCP server connection: `connect_mcp_servers()` registers configured MCP servers, discovers tools into registry
+- CLI commands: `ante repl`, `ante query`, `ante todo`, `ante diagram` subcommands with clap-derived parsing
+- Protocol-shape ↔ SDK type conversion: `ModelPoolEntry`, `RiskLevel` mappings between crate types
+- All 142 tests passing across 3 crates (95 agent-sdk + 24 protocol-shape + 23 exec)
+- Hook stdin pipe fix: Explicit `drop(stdin)` after `shutdown()` in `run_command_hook` to prevent child from hanging on open pipe
+- Hook system end-to-end verified: SessionStart, PreUserPromptSubmit, PostUserPromptSubmit events fire in query mode, blocklist hook denies dangerous Bash commands
+- Hook audit: Added `pre_compact.py` + `session_end.py` hook scripts for memory/program usage tracking
+- Hook registration: `init.rs` now installs 3 hook scripts (blocklist, pre_compact, session_end) with default rules
+- PreCompact event emission: Fires at budget limit/warning check points in stream_response (both REPL and query modes)
+- Hooks write to `~/.ante/memory/ante-memory.db` and `~/.ante/run/*.log` for audit trail
+- All 184 tests pass (24 protocol-shape + 120 agent-sdk + 29 exec + 11 ante)
+
 ## v0.preview.26 - 2026-05-13
 
 - Animate the `/compact` info block header while compaction runs

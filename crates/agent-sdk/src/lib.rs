@@ -1,2 +1,14 @@
+pub mod agents;
+pub mod budget;
 pub mod claude;
+pub mod compat;
+pub mod event;
+pub mod hitl;
+pub mod hooks;
+pub mod init;
+pub mod mcp;
+pub mod memory;
+pub mod router;
+pub mod settings;
 pub mod stdio;
+pub mod ui;

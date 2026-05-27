@@ -28,6 +28,196 @@ Ante is an AI-native, cloud-native, local-first agent runtime built by [Antigma 
 - **Extensible** — Custom skills, sub-agents, and persistent memory across sessions.
 - **Benchmark proven** — Topped the Terminal Bench 1.0 and 2.0 leaderboards. Public, reproducible evals.
 
+## Extensibility Features
+
+### 🪝 Hook System
+Custom event-driven hooks that fire before and after tool execution — block dangerous operations, log decisions, or inject context. Supports command hooks (script execution), prompt hooks (LLM-driven decisions), and MCP tool hooks.
+
+```sh
+# Hooks defined in ~/.ante/settings.json
+ante -p "run a command safely"
+```
+
+### 🔌 MCP Ecosystem Integration
+Full MCP (Model Context Protocol) client with stdio transport. Connect any MCP server to extend Ante's tool ecosystem dynamically.
+
+```sh
+# Configure MCP servers in ~/.config/mcp/mcp.json
+{
+  "mcpServers": {
+    "my-server": {
+      "command": "npx",
+      "args": ["-y", "@my/mcp-server"]
+    }
+  }
+}
+```
+
+### 👥 Multi-Agent Orchestration
+Sub-agent system with agent registry loading from Markdown files (YAML frontmatter), task decomposition via conjunction splitting, dependency-graph dispatch, and result synthesis with conflict detection.
+
+```sh
+# Agent definitions in ~/.ante/agents/
+ante -p "decompose this complex task across my agents"
+```
+
+### 🧠 Persistent Memory
+JSON file-backed memory store with case-insensitive search, TF-IDF relevance ranking, project-scoped context retrieval, and automatic post-tool-use hook for learning from execution results.
+
+### 🔀 Dynamic Model Router
+Rule-based task complexity classifier that selects the cheapest adequate model for simple tasks and the most capable model for complex ones. Configurable model pool with capability scores, cost tracking, and token budget estimation.
+
+### 🗣️ Inter-Agent Communication
+Local Unix domain socket broker enabling structured message passing between Ante instances on the same machine. Supports direct messaging, broadcasting, and pub-sub topics.
+
+### 👁️ Human-in-the-Loop Approval
+Risk-based permission system that pauses sensitive operations for user approval. Configurable risk tiers (Safe/Low/Medium/High/Critical) with substring pattern matching, per-tool sensitivity, and request timeout/expiry.
+
+### 📋 Built-in Utilities
+- **Todo List** — Persistent task management with cross-session persistence
+- **Diagram Renderer** — Terminal-optimized Mermaid flowchart/sequence diagram rendering using box-drawing characters
+
+## Usage
+
+### Modes
+
+| Mode | Command | Description |
+|------|---------|-------------|
+| Interactive REPL | `ante repl` | Full interactive session with Claude, extensibility features, and status bar |
+| One-shot query | `ante query "prompt"` | Single prompt, streams response with full Ante tooling |
+| Initialize | `ante init` | Create `~/.ante/` directory structure, install default blocklist hook |
+| Memory | `ante memory <cmd>` | Direct memory operations (add, search, list) |
+| Todo | `ante todo <cmd>` | Direct todo list operations (add, list, done, clear) |
+| Agents | `ante agents <cmd>` | List available sub-agents or decompose a task |
+| Diagram | `ante diagram <file>` | Render a Mermaid diagram file to terminal ASCII |
+
+### Status Bar
+
+On startup, Ante displays a feature summary banner with connection stats:
+
+```
+    █████╗ ███╗   ██╗████████╗███████╗
+   ██╔══██╗████╗  ██║╚══██╔══╝██╔════╝
+   ███████║██╔██╗ ██║   ██║   █████╗
+   ██╔══██║██║╚██╗██║   ██║   ██╔══╝
+   ██║  ██║██║ ╚████║   ██║   ███████╗
+   ╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝   ╚══════╝
+   ═══════════════════════════════════════
+   v0.1.0
+   model │ claude-sonnet-4
+   ───────────────────────────────────────
+   [✓] hooks 1  [✓] mcp 2  [✓] agents 5  [✓] memories 12
+   ═══════════════════════════════════════
+```
+
+During a session, the status bar shows real-time metrics on the last line:
+
+```
+● claude-sonnet-4  ▏ctx ████░░░░░░ 45%  ▏$0.23  ▏14m  ▏MCP:2  ▏Mem:12  ▏Ag:5  ▏safe
+```
+
+| Field | Description |
+|-------|-------------|
+| `●` / `◉` | Indicator — ● normal, ◉ warning (context >50%), ◉ critical (>80%) |
+| Model | Current LLM model name |
+| `ctx ████░░ 45%` | Context window usage with visual progress bar |
+| `$0.23` | Cumulative session cost estimate |
+| `14m` | Session elapsed time |
+| `MCP:2` | Connected MCP servers |
+| `Mem:12` | Stored memory entries |
+| `Ag:5` | Loaded sub-agents |
+| `safe` | HITL risk level (safe/low/medium/high/critical) |
+
+### One-Shot Query
+
+```sh
+# Basic query
+ante query "find and fix the failing test"
+
+# With model override
+ante query --model claude-sonnet-4 "refactor the database module"
+
+# Disable features
+ante query --no-memory --no-hitl "run this command"
+```
+
+### Interactive REPL
+
+```sh
+# Start interactive session
+ante repl
+
+# With specific CLI binary
+ante repl --cli-path /path/to/claude
+
+# With model override
+ante repl --model claude-sonnet-4
+```
+
+### REPL Commands
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show available commands |
+| `/budget` | Show token/cost usage this session |
+| `/interrupt` | Interrupt the current Claude response |
+| `/model <name>` | Switch to a different model |
+| `/info` | Show session info |
+| `/quit` | End session |
+
+### Configuration
+
+Ante loads settings from `~/.ante/settings.json`. Create it with default values:
+
+```sh
+ante init
+```
+
+Key configuration sections:
+
+| Section | Description |
+|---------|-------------|
+| `hooks` | Pre/post tool execution hooks with rules, matchers, and definitions |
+| `mcpServers` | MCP server registry (command, args, auto-start, lifecycle) |
+| `agents` | Sub-agent directory and discovery settings |
+| `memory` | Memory store path, context limits, auto-indexing |
+| `modelPool` | Model entries for dynamic routing (capability score, cost, context) |
+| `contextBudget` | Token and cost limits with warning thresholds |
+| `claudeCompat` | Claude Code settings compatibility flags |
+| `sensitiveTools` | Tool patterns requiring HITL approval |
+
+### Claude Code Hook Compatibility
+
+If you already have Claude Code hooks in `.claude/settings.json`, Ante can merge them:
+
+```json
+{
+  "claudeCompat": {
+    "mergeClaudeSettings": true,
+    "translateEventNames": true
+  }
+}
+```
+
+### Building from Source
+
+```sh
+# Prerequisites: Rust toolchain (edition 2024)
+
+# Build the ante binary
+cd crates/ante
+cargo build --release
+
+# Build all crates
+cargo build --release  # from any crate directory
+```
+
+The project has 4 crates:
+- `crates/ante/` — Application binary (integration layer)
+- `crates/agent-sdk/` — Agent primitives, hooks, MCP client, model router, memory, HITL, broker
+- `crates/exec/` — Process execution, MCP process manager
+- `crates/protocol-shape/` — Event payload schemas, hook decision types, settings
+
 ## Performance
 **We care about the harness not the model nor the prompts.**
 

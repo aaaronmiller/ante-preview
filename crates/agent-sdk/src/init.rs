@@ -1,0 +1,297 @@
+//! First-run initialization for Ante extensibility features.
+//!
+//! On first run, creates `~/.ante/settings.json` with default hooks,
+//! installs the blocklist hook script, and creates the agents directory.
+
+use std::fs;
+use std::path::PathBuf;
+
+use ante_protocol_shape::settings::{
+    AgentsConfig, ClaudeCompatFlags, ContextBudget, HookDefinition, HookMatchRule, HooksConfig,
+    MemoryConfig, Settings,
+};
+use ante_protocol_shape::event::EventType;
+use thiserror::Error;
+
+/// Default blocklist hook script content (shipped with Ante).
+const BLOCKLIST_SCRIPT: &[u8] = include_bytes!("hooks/blocklist.sh");
+
+/// Pre-compact memory usage logger hook script (shipped with Ante).
+const PRE_COMPACT_SCRIPT: &[u8] = include_bytes!("hooks/pre_compact.py");
+
+/// Session-end summary logger hook script (shipped with Ante).
+const SESSION_END_SCRIPT: &[u8] = include_bytes!("hooks/session_end.py");
+
+#[derive(Debug, Error)]
+pub enum InitError {
+    #[error("Failed to create directory {path}: {source}")]
+    CreateDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("Failed to write file {path}: {source}")]
+    WriteFile {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("Settings already exist at {0} — run --force to overwrite")]
+    AlreadyExists(PathBuf),
+}
+
+/// Run first-time setup.
+///
+/// Creates `~/.ante/` directory, writes default `settings.json`
+/// with the blocklist hook enabled, and installs the hook script.
+///
+/// Returns `Ok(true)` if setup was performed, `Ok(false)` if already set up.
+pub fn first_run_setup(force: bool) -> Result<bool, InitError> {
+    let ante_dir = default_ante_dir();
+
+    let settings_path = ante_dir.join("settings.json");
+    if settings_path.exists() && !force {
+        return Ok(false);
+    }
+
+    // Create directory structure
+    create_dir_if_missing(&ante_dir)?;
+    create_dir_if_missing(&ante_dir.join("hooks"))?;
+    create_dir_if_missing(&ante_dir.join("agents"))?;
+    create_dir_if_missing(&ante_dir.join("run"))?;
+    create_dir_if_missing(&ante_dir.join("memory"))?;
+
+    // Write blocklist hook script
+    let hook_path = ante_dir.join("hooks").join("block-danger.sh");
+    fs::write(&hook_path, BLOCKLIST_SCRIPT).map_err(|source| InitError::WriteFile {
+        path: hook_path.clone(),
+        source,
+    })?;
+
+    // Make executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::Permissions::from_mode(0o755);
+        fs::set_permissions(&hook_path, perms).map_err(|source| InitError::WriteFile {
+            path: hook_path.clone(),
+            source,
+        })?;
+    }
+
+    // Write pre_compact.py hook script
+    let pre_compact_path = ante_dir.join("hooks").join("pre_compact.py");
+    fs::write(&pre_compact_path, PRE_COMPACT_SCRIPT).map_err(|source| InitError::WriteFile {
+        path: pre_compact_path.clone(),
+        source,
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::Permissions::from_mode(0o755);
+        fs::set_permissions(&pre_compact_path, perms).map_err(|source| InitError::WriteFile {
+            path: pre_compact_path.clone(),
+            source,
+        })?;
+    }
+
+    // Write session_end.py hook script
+    let session_end_path = ante_dir.join("hooks").join("session_end.py");
+    fs::write(&session_end_path, SESSION_END_SCRIPT).map_err(|source| InitError::WriteFile {
+        path: session_end_path.clone(),
+        source,
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::Permissions::from_mode(0o755);
+        fs::set_permissions(&session_end_path, perms).map_err(|source| InitError::WriteFile {
+            path: session_end_path.clone(),
+            source,
+        })?;
+    }
+
+    // Write default settings with blocklist hook
+    let settings = default_settings(&ante_dir);
+    let json = serde_json::to_string_pretty(&settings).map_err(|source| {
+        InitError::WriteFile {
+            path: settings_path.clone(),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, source.to_string()),
+        }
+    })?;
+
+    fs::write(&settings_path, &json).map_err(|source| InitError::WriteFile {
+        path: settings_path.clone(),
+        source,
+    })?;
+
+    Ok(true)
+}
+
+/// Returns default settings with the blocklist, pre_compact, and session_end hooks pre-registered.
+fn default_settings(ante_dir: &PathBuf) -> Settings {
+    let hook_path = ante_dir.join("hooks").join("block-danger.sh");
+    let pre_compact_path = ante_dir.join("hooks").join("pre_compact.py");
+    let session_end_path = ante_dir.join("hooks").join("session_end.py");
+
+    Settings {
+        extensibility_enabled: true,
+        hooks: HooksConfig {
+            max_depth: 3,
+            default_timeout_ms: 30_000,
+            rules: vec![
+                // Blocklist hook: blocks dangerous Bash commands
+                HookMatchRule {
+                    event_types: vec![EventType::PreToolUse],
+                    tool_name_pattern: Some("Bash*".into()),
+                    hooks: vec![HookDefinition::Command {
+                        command: hook_path.display().to_string(),
+                        args: vec![],
+                        timeout_ms: Some(5000),
+                    }],
+                },
+                // Pre-compact hook: logs memory/program usage before compaction
+                HookMatchRule {
+                    event_types: vec![EventType::PreCompact],
+                    tool_name_pattern: None,
+                    hooks: vec![HookDefinition::Command {
+                        command: "python3".into(),
+                        args: vec![pre_compact_path.display().to_string()],
+                        timeout_ms: Some(10_000),
+                    }],
+                },
+                // Session-end hook: logs session summary on exit
+                HookMatchRule {
+                    event_types: vec![EventType::SessionEnd],
+                    tool_name_pattern: None,
+                    hooks: vec![HookDefinition::Command {
+                        command: "python3".into(),
+                        args: vec![session_end_path.display().to_string()],
+                        timeout_ms: Some(10_000),
+                    }],
+                },
+            ],
+        },
+        sensitive_tools: vec!["Bash".into(), "Write".into(), "Execute".into()],
+        mcp_servers: Vec::new(),
+        agents: AgentsConfig {
+            directory: ante_dir.join("agents"),
+            max_concurrent: 4,
+        },
+        memory: MemoryConfig {
+            db_path: ante_dir.join("memory").join("ante-memory.db"),
+            max_context_memories: 20,
+            auto_index: true,
+        },
+        model_pool: Vec::new(),
+        context_budget: ContextBudget {
+            max_tokens: 200_000,
+            max_cost_usd: 1.0,
+            warn_at: 0.8,
+        },
+        claude_compat: ClaudeCompatFlags {
+            merge_claude_settings: true,
+            translate_event_names: true,
+            write_claude_settings: false,
+            claude_settings_path: None,
+        },
+        ante_dir: Some(ante_dir.clone()),
+    }
+}
+
+fn default_ante_dir() -> PathBuf {
+    if let Ok(config) = std::env::var("XDG_CONFIG_HOME") {
+        let candidate = PathBuf::from(config).join("ante");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join(".ante");
+    }
+    PathBuf::from(".ante")
+}
+
+fn create_dir_if_missing(path: &PathBuf) -> Result<(), InitError> {
+    if !path.exists() {
+        fs::create_dir_all(path).map_err(|source| InitError::CreateDir {
+            path: path.clone(),
+            source,
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // Tests that set HOME must use this lock to avoid race conditions
+    // from parallel test execution sharing the process env.
+    static HOME_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn first_run_creates_and_forces_settings() {
+        let _lock = HOME_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().expect("temp dir");
+        unsafe { std::env::set_var("HOME", tmp.path().to_str().unwrap()) };
+
+        // First run should set up
+        let result = first_run_setup(false);
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+
+        // Verify files and hook scripts exist
+        let ante_dir = tmp.path().join(".ante");
+        assert!(ante_dir.join("settings.json").exists());
+        assert!(ante_dir.join("hooks").join("block-danger.sh").exists());
+        assert!(ante_dir.join("hooks").join("pre_compact.py").exists());
+        assert!(ante_dir.join("hooks").join("session_end.py").exists());
+        assert!(ante_dir.join("agents").exists());
+        assert!(ante_dir.join("run").exists());
+        assert!(ante_dir.join("memory").exists());
+
+        // Second run with no force should detect existing setup
+        let result2 = first_run_setup(false);
+        assert!(result2.is_ok());
+        assert!(!result2.unwrap());
+
+        // Forced overwrite should re-setup
+        let result3 = first_run_setup(true);
+        assert!(result3.is_ok());
+        assert!(result3.unwrap());
+    }
+
+    #[test]
+    fn default_settings_has_all_hooks() {
+        let dir = PathBuf::from("/home/user/.ante");
+        let settings = default_settings(&dir);
+        assert_eq!(settings.hooks.rules.len(), 3);
+        assert_eq!(settings.sensitive_tools.len(), 3);
+
+        // Rule 0: Blocklist hook (PreToolUse on Bash*)
+        assert_eq!(
+            settings.hooks.rules[0].event_types[0],
+            EventType::PreToolUse
+        );
+        assert_eq!(
+            settings.hooks.rules[0].tool_name_pattern,
+            Some("Bash*".into())
+        );
+
+        // Rule 1: Pre-compact hook
+        assert_eq!(
+            settings.hooks.rules[1].event_types[0],
+            EventType::PreCompact
+        );
+        assert!(settings.hooks.rules[1].tool_name_pattern.is_none());
+
+        // Rule 2: Session-end hook
+        assert_eq!(
+            settings.hooks.rules[2].event_types[0],
+            EventType::SessionEnd
+        );
+        assert!(settings.hooks.rules[2].tool_name_pattern.is_none());
+    }
+}
