@@ -11,26 +11,54 @@ use ante_protocol_shape::{
 use tokio::sync::RwLock;
 
 use crate::hooks::registry::HookRegistry;
-use crate::hooks::{HookExecutor, HookOutput};
+use crate::hooks::{HookExecError, HookExecutor, HookOutput, InvokeLlm, InvokeMcp, InvokeSubAgent};
 
 /// The central event dispatch bus.
 ///
 /// Holds the hook registry and provides `emit()` for firing events
-/// through the hook pipeline.
+/// through the hook pipeline.  Optional `llm_callback`, `mcp_callback`
+/// and `subagent_callback` are passed to prompt / MCP-tool / sub-agent
+/// hooks respectively.
 #[derive(Clone)]
 pub struct EventBus {
     registry: Arc<RwLock<HookRegistry>>,
+    llm_callback: Option<InvokeLlm>,
+    mcp_callback: Option<InvokeMcp>,
+    subagent_callback: Option<InvokeSubAgent>,
 }
 
 impl EventBus {
     /// Create a new event bus backed by the given hook registry.
     pub fn new(registry: HookRegistry) -> Self {
-        Self { registry: Arc::new(RwLock::new(registry)) }
+        Self {
+            registry: Arc::new(RwLock::new(registry)),
+            llm_callback: None,
+            mcp_callback: None,
+            subagent_callback: None,
+        }
     }
 
     /// Create an empty event bus (no hooks registered). Useful for testing.
     pub fn empty() -> Self {
         Self::new(HookRegistry::new(Vec::new()))
+    }
+
+    /// Attach an LLM invocation callback for prompt hooks.
+    pub fn with_llm_callback(mut self, cb: InvokeLlm) -> Self {
+        self.llm_callback = Some(cb);
+        self
+    }
+
+    /// Attach an MCP invocation callback for MCP-tool hooks.
+    pub fn with_mcp_callback(mut self, cb: InvokeMcp) -> Self {
+        self.mcp_callback = Some(cb);
+        self
+    }
+
+    /// Attach a sub-agent invocation callback for sub-agent hooks.
+    pub fn with_subagent_callback(mut self, cb: InvokeSubAgent) -> Self {
+        self.subagent_callback = Some(cb);
+        self
     }
 
     /// Fire a lifecycle event through the hook pipeline.
@@ -57,7 +85,15 @@ impl EventBus {
         for rule in &matching {
             for hook in &rule.hooks {
                 let executor = HookExecutor::new(hook.clone(), event_type);
-                match executor.execute(payload).await {
+                match executor
+                    .execute(
+                        payload,
+                        self.llm_callback.as_ref(),
+                        self.mcp_callback.as_ref(),
+                        self.subagent_callback.as_ref(),
+                    )
+                    .await
+                {
                     Ok(HookOutput { hook_decision, hook_name }) => {
                         hooks_executed.push(hook_name);
                         decision = decision.merge(hook_decision);

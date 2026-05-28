@@ -130,7 +130,8 @@ pub struct HookMatchRule {
     pub hooks: Vec<HookDefinition>,
 }
 
-/// A single hook definition — can be a command, LLM prompt, or MCP tool call.
+/// A single hook definition — can be a command, LLM prompt, MCP tool call,
+/// or sub-agent dispatch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HookDefinition {
@@ -163,6 +164,15 @@ pub enum HookDefinition {
         /// Static arguments to pass to the tool.
         #[serde(default)]
         args: HashMap<String, Value>,
+    },
+    /// Dispatch a sub-agent for further processing.
+    SubAgent {
+        /// Name of the sub-agent to invoke (as registered in the agent
+        /// registry).
+        agent_name: String,
+        /// Task prompt template.  Supports `{event_json}` and
+        /// `{event_type}` template variables.
+        task: String,
     },
 }
 

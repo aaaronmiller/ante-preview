@@ -6,7 +6,7 @@ use tempfile::TempDir;
 use std::time::Duration;
 
 use agent_sdk::agents::{
-    Broker, connect_to_broker,
+    Broker, Transport, connect_to_broker,
 };
 
 #[tokio::test]
@@ -14,10 +14,10 @@ async fn test_broker_connects_and_counts_agents() {
     let tmp = TempDir::new().unwrap();
     let sock_path = tmp.path().join("test.sock");
 
-    let broker = Arc::new(Broker::bind(sock_path.clone(), true).await.unwrap());
+    let broker = Arc::new(Broker::bind(Transport::unix(sock_path.clone()), true).await.unwrap());
     broker.start_and_wait().await;
 
-    let (_h, _w, _ack) = connect_to_broker(&sock_path, "agent-alpha").await.unwrap();
+    let (_h, _w, _ack) = connect_to_broker(&Transport::unix(sock_path.clone()), "agent-alpha").await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(broker.connection_count().await, 1);
 
@@ -29,12 +29,12 @@ async fn test_two_agents_can_connect() {
     let tmp = TempDir::new().unwrap();
     let sock_path = tmp.path().join("multi.sock");
 
-    let broker = Arc::new(Broker::bind(sock_path.clone(), true).await.unwrap());
+    let broker = Arc::new(Broker::bind(Transport::unix(sock_path.clone()), true).await.unwrap());
     broker.start_and_wait().await;
 
-    let (_h1, _w1, ack1) = connect_to_broker(&sock_path, "agent-1").await.unwrap();
+    let (_h1, _w1, ack1) = connect_to_broker(&Transport::unix(sock_path.clone()), "agent-1").await.unwrap();
     let _ = ack1.await;
-    let (_h2, _w2, ack2) = connect_to_broker(&sock_path, "agent-2").await.unwrap();
+    let (_h2, _w2, ack2) = connect_to_broker(&Transport::unix(sock_path.clone()), "agent-2").await.unwrap();
     let _ = ack2.await;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -53,7 +53,7 @@ async fn test_broker_shutdown_removes_socket() {
     let sock_path = tmp.path().join("cleanup.sock");
 
     {
-        let broker = Arc::new(Broker::bind(sock_path.clone(), true).await.unwrap());
+        let broker = Arc::new(Broker::bind(Transport::unix(sock_path.clone()), true).await.unwrap());
         broker.start_and_wait().await;
         assert!(sock_path.exists());
         broker.shutdown().await;
@@ -67,7 +67,7 @@ async fn test_broker_rejects_bad_registration() {
     let tmp = TempDir::new().unwrap();
     let sock_path = tmp.path().join("badreg.sock");
 
-    let broker = Arc::new(Broker::bind(sock_path.clone(), true).await.unwrap());
+    let broker = Arc::new(Broker::bind(Transport::unix(sock_path.clone()), true).await.unwrap());
     broker.start_and_wait().await;
 
     use tokio::io::AsyncWriteExt;

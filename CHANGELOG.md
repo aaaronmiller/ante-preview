@@ -3,6 +3,23 @@
 ## [Unreleased]
 
 ### Added
+- TCP transport for inter-agent broker: `Transport::Tcp` with `Transport::tcp()`, `local_address()`, full test coverage
+- `--hitl-mode` and `--risk-threshold` CLI arguments for `ante query` and `ante repl` commands
+- `RiskLevel::from_str()` for string-to-enum parsing in CLI arg wiring
+- Internal MCP server (`ante internal-mcp-server`) providing diagram/todo as MCP agent tools, auto-registered on startup
+- Sub-agent hook variant (`HookDefinition::SubAgent`) with callback-based execution and task template formatting
+- HITL `ApprovalDecision::Modify` variant with `approve_with_modifications()` channel wiring
+- HITL `HitlMode` enum (`PerRequest`, `BatchRiskThreshold`, `ApproveAll`) with `from_str`, `needs_approval`
+- HITL `RiskLevel` now implements `Ord`/`PartialOrd` for threshold-based auto-approval
+- Pending approval channel wiring: `request_approval` creates oneshot channel, `wait_for_approval` awaits decision with timeout
+- Hook-matching O(1) cache in `HookRegistry` via `RefCell<HashMap<MatchCacheKey, Vec<usize>>>`
+- Model-router feedback loop: `RoutingFeedback` with failure tracking, capability penalty, automatic recovery
+- Model fallback chain: `select_with_fallback()` tries candidates in cost order up to `FALLBACK_MAX_RETRIES`
+- MCP tool hook executor: Injects event payload as `"event"` key plus top-level `event_type`/`tool_name`
+- Prompt hook executor: Template formatting with `{event_type}`/`{event_json}` placeholders, robust response parser
+- Dynamic sub-agent dispatcher: Topological-level scheduling with `join_all` concurrent execution, owned `TaskContext`
+- `InvokeLlm`, `InvokeMcp`, `InvokeSubAgent` callback type aliases stored in `EventBus`
+- `HookExecError::Prompt`, `HookExecError::McpTool`, `HookExecError::SubAgent` error variants
 - Hook system: Event types, payloads, decision pipeline, hook registry (PreToolUse/PostToolUse/PermissionRequest)
 - Command hooks: Shell script hooks with JSON event piping, timeout, exit code mapping
 - Prompt hooks: LLM-based hook executor stub with response parsing

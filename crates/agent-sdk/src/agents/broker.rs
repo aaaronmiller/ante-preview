@@ -1,18 +1,28 @@
-//! Inter-agent message broker using Unix domain sockets.
+//! Inter-agent message broker with Unix domain socket and TCP transport.
 //!
-//! Provides a local message bus for sub-agents to communicate:
-//!   - `Broker` listens on a UDS path, accepts connections from sub-agents
+//! Provides a local or networked message bus for sub-agents to communicate:
+//!   - `Broker` listens on a configurable transport, accepts connections
 //!   - Messages are JSON-framed with `\n` delimiter
 //!   - Supports broadcast, direct messaging, and pub/sub by topic
-//!   - Automatic cleanup on Drop (removes socket file)
+//!   - Automatic cleanup on Drop (removes socket file for UDS)
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::net::tcp::{OwnedWriteHalf as TcpOwnedWriteHalf, ReadHalf as TcpReadHalf};
+use tokio::net::unix::{OwnedWriteHalf as UnixOwnedWriteHalf, ReadHalf as UnixReadHalf};
+use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
+use tokio::sync::{Mutex, broadcast, oneshot};
+
+/// Operating system's ephemeral port range start (commonly 49152 on Linux).
+/// We use this as a default port hint; the OS will assign the actual port.
+const EPHEMERAL_PORT_START: u16 = 49152;
 
 /// Format a UNIX timestamp as an RFC 3339-compatible UTC string
 /// without requiring the `chrono` crate.
@@ -56,16 +66,64 @@ fn seconds_to_ymdhms(secs: u64) -> (i32, u32, u32, u32, u32, u32) {
 
     (y, m, d, hh, mm, ss)
 }
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::unix::OwnedWriteHalf;
-use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{Mutex, broadcast, oneshot};
+
+/// Transport type for the broker listener and connections.
+///
+/// Selects between Unix domain socket (local-only) or TCP (cross-network).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Transport {
+    /// Unix domain socket at the given path.
+    Unix {
+        path: PathBuf,
+    },
+    /// TCP connection on the given address.
+    Tcp {
+        host: String,
+        port: u16,
+    },
+}
+
+impl Transport {
+    /// Create a UDS transport at the given socket path.
+    pub fn unix(path: impl Into<PathBuf>) -> Self {
+        Transport::Unix { path: path.into() }
+    }
+
+    /// Create a TCP transport at the given host and port.
+    /// Use port `0` to request an OS-assigned ephemeral port.
+    pub fn tcp(host: impl Into<String>, port: u16) -> Self {
+        Transport::Tcp {
+            host: host.into(),
+            port,
+        }
+    }
+
+    /// Return a human-readable address string for logging/display.
+    pub fn address_string(&self) -> String {
+        match self {
+            Transport::Unix { path } => path.display().to_string(),
+            Transport::Tcp { host, port } => format!("{host}:{port}"),
+        }
+    }
+
+    /// Return the socket path if this is a Unix transport.
+    pub fn unix_path(&self) -> Option<&PathBuf> {
+        match self {
+            Transport::Unix { path } => Some(path),
+            Transport::Tcp { .. } => None,
+        }
+    }
+}
 
 /// Broker errors.
 #[derive(Debug, Error)]
 pub enum BrokerError {
-    #[error("Failed to bind UDS listener at {path}: {source}")]
-    Bind { path: String, source: std::io::Error },
+    #[error("Failed to bind at {address}: {source}")]
+    Bind {
+        address: String,
+        source: std::io::Error,
+    },
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Serde error: {0}")]
@@ -100,16 +158,24 @@ pub struct AgentMessage {
 /// Connection state for a connected agent.
 struct AgentConnection {
     id: String,
-    writer: Arc<Mutex<OwnedWriteHalf>>,
+    writer: Arc<Mutex<Box<dyn AsyncWrite + Unpin + Send>>>,
+}
+
+/// Internal listener abstraction over UDS and TCP.
+enum ListenerKind {
+    Unix(UnixListener),
+    Tcp(TcpListener),
 }
 
 /// Message broker for inter-agent communication.
 ///
-/// Listens on a Unix domain socket and routes messages between
-/// connected agent processes.
+/// Listens on a configurable transport (Unix domain socket or TCP) and
+/// routes messages between connected agent processes. Use the
+/// `Transport` enum to select between local-only UDS and cross-network
+/// TCP communication.
 pub struct Broker {
-    listener: Option<UnixListener>,
-    socket_path: PathBuf,
+    listener: Option<ListenerKind>,
+    transport: Transport,
     connections: Arc<Mutex<HashMap<String, AgentConnection>>>,
     shutdown: Arc<Mutex<bool>>,
     /// Broadcast channel for pub/sub topics.
@@ -117,28 +183,63 @@ pub struct Broker {
 }
 
 impl Broker {
-    /// Create and bind a new broker at the given socket path.
+    /// Create and bind a new broker on the given transport.
     ///
-    /// If `cleanup` is true, removes any existing socket file first.
-    pub async fn bind(socket_path: PathBuf, cleanup: bool) -> Result<Self, BrokerError> {
-        if cleanup && socket_path.exists() {
-            let _ = std::fs::remove_file(&socket_path);
-        }
-
-        let listener = UnixListener::bind(&socket_path).map_err(|e| BrokerError::Bind {
-            path: socket_path.display().to_string(),
-            source: e,
-        })?;
+    /// For UDS transport, if `cleanup` is true, removes any existing socket
+    /// file before binding. For TCP transport, the OS assigns the port if
+    /// port 0 is given in the transport config.
+    pub async fn bind(transport: Transport, cleanup: bool) -> Result<Self, BrokerError> {
+        let listener = match &transport {
+            Transport::Unix { path } => {
+                if cleanup && path.exists() {
+                    let _ = std::fs::remove_file(path);
+                }
+                let l = UnixListener::bind(path).map_err(|e| BrokerError::Bind {
+                    address: transport.address_string(),
+                    source: e,
+                })?;
+                ListenerKind::Unix(l)
+            }
+            Transport::Tcp { host, port } => {
+                let addr: SocketAddr = format!("{host}:{port}")
+                    .parse()
+                    .map_err(|e| BrokerError::Bind {
+                        address: transport.address_string(),
+                        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, e),
+                    })?;
+                let l = TcpListener::bind(addr).await.map_err(|e| BrokerError::Bind {
+                    address: transport.address_string(),
+                    source: e,
+                })?;
+                ListenerKind::Tcp(l)
+            }
+        };
 
         let (topic_tx, _) = broadcast::channel(256);
 
         Ok(Broker {
             listener: Some(listener),
-            socket_path,
+            transport,
             connections: Arc::new(Mutex::new(HashMap::new())),
             shutdown: Arc::new(Mutex::new(false)),
             topic_tx,
         })
+    }
+
+    /// Return the actual local address the broker is listening on.
+    ///
+    /// For TCP transports with port 0, this reveals the OS-assigned port.
+    /// For UDS, returns the socket path as a `SocketAddr`-like string
+    /// "unix:<path>" which callers can parse.
+    pub fn local_address(&self) -> String {
+        match &self.listener {
+            Some(ListenerKind::Unix(_)) => format!("unix:{}", self.transport.address_string()),
+            Some(ListenerKind::Tcp(l)) => match l.local_addr() {
+                Ok(addr) => addr.to_string(),
+                Err(_) => self.transport.address_string(),
+            },
+            None => self.transport.address_string(),
+        }
     }
 
     /// Start accepting connections in the background.
@@ -175,8 +276,8 @@ impl Broker {
                 break;
             }
 
-            match listener.accept().await {
-                Ok((stream, _addr)) => {
+            match self.accept_one(listener).await {
+                Ok(stream) => {
                     let this = self.clone();
                     tokio::spawn(async move { this.handle_connection(stream).await });
                 }
@@ -190,10 +291,25 @@ impl Broker {
         }
     }
 
+    /// Accept a single connection, returning a generic stream handle.
+    async fn accept_one(&self, listener: &ListenerKind) -> Result<Box<dyn AsyncReadWriteUnpinSend>, std::io::Error> {
+        match listener {
+            ListenerKind::Unix(l) => {
+                let (stream, _) = l.accept().await?;
+                Ok(Box::new(stream))
+            }
+            ListenerKind::Tcp(l) => {
+                let (stream, _) = l.accept().await?;
+                Ok(Box::new(stream))
+            }
+        }
+    }
+
     /// Handle a single agent connection: register, route messages, cleanup.
-    async fn handle_connection(self: Arc<Self>, stream: UnixStream) {
-        let (reader, writer) = stream.into_split();
-        let writer = Arc::new(tokio::sync::Mutex::new(writer));
+    async fn handle_connection(self: Arc<Self>, stream: Box<dyn AsyncReadWriteUnpinSend>) {
+        let (reader, writer) = tokio::io::split(stream);
+        let writer: Arc<Mutex<Box<dyn AsyncWrite + Unpin + Send>>> =
+            Arc::new(Mutex::new(Box::new(writer)));
 
         // Read the first message — must be a registration with agent ID
         let mut buf_reader = BufReader::new(reader);
@@ -209,7 +325,7 @@ impl Broker {
 
         let agent_id = register_msg.from.clone();
 
-        // Register the connection (share the same Arc<Mutex<OwnedWriteHalf>>)
+        // Register the connection
         {
             let mut conns = self.connections.lock().await;
             conns.insert(
@@ -343,9 +459,14 @@ impl Broker {
         conns.keys().cloned().collect()
     }
 
-    /// Get the path being listened on.
-    pub fn socket_path(&self) -> &PathBuf {
-        &self.socket_path
+    /// Get the transport configuration.
+    pub fn transport(&self) -> &Transport {
+        &self.transport
+    }
+
+    /// Get the path being listened on (only for UDS transport).
+    pub fn socket_path(&self) -> Option<&PathBuf> {
+        self.transport.unix_path()
     }
 
     /// Check if the broker is shutting down.
@@ -374,21 +495,31 @@ impl Broker {
         };
         self.broadcast(&bye).await;
 
-        // Clean up socket file
-        if self.socket_path.exists() {
-            let _ = std::fs::remove_file(&self.socket_path);
+        // Clean up socket file (UDS only)
+        if let Some(path) = self.transport.unix_path() {
+            if path.exists() {
+                let _ = std::fs::remove_file(path);
+            }
         }
     }
 }
 
 impl Drop for Broker {
     fn drop(&mut self) {
-        // Best-effort cleanup of the socket file
-        if self.socket_path.exists() {
-            let _ = std::fs::remove_file(&self.socket_path);
+        // Best-effort cleanup of the socket file (UDS only)
+        if let Some(path) = self.transport.unix_path() {
+            if path.exists() {
+                let _ = std::fs::remove_file(path);
+            }
         }
     }
 }
+
+// Type alias used internally to erase the concrete stream type.
+// Both UnixStream and TcpStream implement these traits.
+trait AsyncReadWriteUnpinSend: AsyncRead + AsyncWrite + Unpin + Send {}
+impl AsyncReadWriteUnpinSend for UnixStream {}
+impl AsyncReadWriteUnpinSend for TcpStream {}
 
 /// Helper to build a registration message for connecting to a broker.
 pub fn register_msg(agent_id: &str) -> AgentMessage {
@@ -416,22 +547,50 @@ pub fn direct_msg(from: &str, to: &str, body: &str) -> AgentMessage {
     }
 }
 
-/// Connect to a broker as an agent.
-/// Connect to a broker as an agent.
+/// Connect to a broker via the given transport.
 ///
-/// Returns (reader_task_handle, writer, ack_receiver) for bidirectional communication.
-/// The `ack_rx` receiver will get the broker's ACK message when registration is confirmed.
+/// For UDS transports, connects via Unix domain socket at the given path.
+/// For TCP transports, connects via TCP to the given host:port.
+///
+/// Returns (reader_task_handle, writer, ack_receiver) for bidirectional
+/// communication. The `ack_rx` receiver will get the broker's ACK message
+/// when registration is confirmed.
 pub async fn connect_to_broker(
-    socket_path: &std::path::Path,
+    transport: &Transport,
     agent_id: &str,
-) -> Result<(tokio::task::JoinHandle<()>, Arc<tokio::sync::Mutex<OwnedWriteHalf>>, oneshot::Receiver<AgentMessage>), BrokerError> {
-    let stream = UnixStream::connect(socket_path).await?;
-    let (reader, writer) = stream.into_split();
-    let writer = Arc::new(tokio::sync::Mutex::new(writer));
+) -> Result<
+    (
+        tokio::task::JoinHandle<()>,
+        Arc<Mutex<Box<dyn AsyncWrite + Unpin + Send>>>,
+        oneshot::Receiver<AgentMessage>,
+    ),
+    BrokerError,
+> {
+    // Connect via the appropriate transport
+    let stream: Box<dyn AsyncReadWriteUnpinSend> = match transport {
+        Transport::Unix { path } => {
+            let s = UnixStream::connect(path).await?;
+            Box::new(s)
+        }
+        Transport::Tcp { host, port } => {
+            let addr: SocketAddr = format!("{host}:{port}")
+                .parse()
+                .map_err(|e| BrokerError::Bind {
+                    address: transport.address_string(),
+                    source: std::io::Error::new(std::io::ErrorKind::InvalidInput, e),
+                })?;
+            let s = TcpStream::connect(addr).await?;
+            Box::new(s)
+        }
+    };
+
+    let (reader, writer) = tokio::io::split(stream);
+    let writer: Arc<Mutex<Box<dyn AsyncWrite + Unpin + Send>>> =
+        Arc::new(Mutex::new(Box::new(writer)));
 
     // Channel to receive the ACK
     let (ack_tx, ack_rx) = oneshot::channel();
-    let ack_tx = Arc::new(tokio::sync::Mutex::new(Some(ack_tx)));
+    let ack_tx = Arc::new(Mutex::new(Some(ack_tx)));
 
     // Send registration
     {
@@ -478,17 +637,19 @@ pub async fn connect_to_broker(
 mod tests {
     use super::*;
 
+    // ── UDS tests ──────────────────────────────────────────────
+
     #[tokio::test]
-    async fn broker_binds_and_accepts_connection() {
+    async fn uds_broker_binds_and_accepts_connection() {
         let tmp = tempfile::tempdir().unwrap();
         let sock_path = tmp.path().join("test.sock");
+        let transport = Transport::unix(sock_path.clone());
 
-        let broker = Arc::new(Broker::bind(sock_path.clone(), true).await.unwrap());
+        let broker = Arc::new(Broker::bind(transport, true).await.unwrap());
         broker.start_and_wait().await;
 
-        // Connect as an agent (keep writer alive to prevent disconnect)
-        let (_h1, _w, ack_rx) = connect_to_broker(&sock_path, "agent-1").await.unwrap();
-        // Wait for broker ACK
+        let transport = Transport::unix(sock_path.clone());
+        let (_h1, _w, ack_rx) = connect_to_broker(&transport, "agent-1").await.unwrap();
         let _ = ack_rx.await;
         assert_eq!(broker.connection_count().await, 1);
 
@@ -496,16 +657,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn broker_routes_direct_message() {
+    async fn uds_broker_routes_direct_message() {
         let tmp = tempfile::tempdir().unwrap();
         let sock_path = tmp.path().join("direct.sock");
+        let transport = Transport::unix(sock_path.clone());
 
-        let broker = Arc::new(Broker::bind(sock_path.clone(), true).await.unwrap());
+        let broker = Arc::new(Broker::bind(transport, true).await.unwrap());
         broker.start_and_wait().await;
 
-        // Connect agent-1 (keep writer alive to prevent disconnect)
-        let (_h1, _w, ack_rx) = connect_to_broker(&sock_path, "agent-1").await.unwrap();
-        // Wait for broker ACK
+        let transport = Transport::unix(sock_path.clone());
+        let (_h1, _w, ack_rx) = connect_to_broker(&transport, "agent-1").await.unwrap();
         let _ = ack_rx.await;
         assert_eq!(broker.connection_count().await, 1);
 
@@ -516,33 +677,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn broker_cleanup_on_shutdown() {
+    async fn uds_broker_cleanup_on_shutdown() {
         let tmp = tempfile::tempdir().unwrap();
         let sock_path = tmp.path().join("cleanup.sock");
+        let transport = Transport::unix(sock_path.clone());
 
         {
-            let broker = Arc::new(Broker::bind(sock_path.clone(), true).await.unwrap());
+            let broker = Arc::new(Broker::bind(transport, true).await.unwrap());
             broker.start_and_wait().await;
             assert!(sock_path.exists());
             broker.shutdown().await;
         }
 
-        // Socket file should be cleaned up
         assert!(!sock_path.exists());
     }
 
     #[tokio::test]
-    async fn broker_multiple_agents() {
+    async fn uds_broker_multiple_agents() {
         let tmp = tempfile::tempdir().unwrap();
         let sock_path = tmp.path().join("multi.sock");
+        let transport = Transport::unix(sock_path.clone());
 
-        let broker = Arc::new(Broker::bind(sock_path.clone(), true).await.unwrap());
+        let broker = Arc::new(Broker::bind(transport, true).await.unwrap());
         broker.start_and_wait().await;
 
-        // Connect 3 agents, waiting for each ACK (keep writers alive)
         let mut _writers = Vec::new();
         for i in 1..=3 {
-            let (_h, w, ack_rx) = connect_to_broker(&sock_path, &format!("agent-{i}")).await.unwrap();
+            let transport = Transport::unix(sock_path.clone());
+            let (_h, w, ack_rx) =
+                connect_to_broker(&transport, &format!("agent-{i}")).await.unwrap();
             _writers.push((_h, w));
             let _ = ack_rx.await;
         }
@@ -558,47 +721,166 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn broker_rejects_bad_registration() {
+    async fn uds_broker_rejects_bad_registration() {
         let tmp = tempfile::tempdir().unwrap();
         let sock_path = tmp.path().join("badreg.sock");
+        let transport = Transport::unix(sock_path.clone());
 
-        let broker = Arc::new(Broker::bind(sock_path.clone(), true).await.unwrap());
+        let broker = Arc::new(Broker::bind(transport, true).await.unwrap());
         broker.start_and_wait().await;
 
         // Connect without a proper registration message
-        let stream = UnixStream::connect(&sock_path).await.unwrap();
-
-        // Send invalid JSON
-        let (_, mut writer) = stream.into_split();
+        let transport = Transport::unix(sock_path.clone());
+        let stream = match &transport {
+            Transport::Unix { path } => UnixStream::connect(path).await.unwrap(),
+            _ => unreachable!(),
+        };
+        let (_reader, mut writer) = stream.into_split();
         writer.write_all(b"not valid json\n").await.unwrap();
         writer.flush().await.unwrap();
         drop(writer);
 
-        // Connection should be rejected (no agent registered)
         assert_eq!(broker.connection_count().await, 0);
 
         broker.shutdown().await;
     }
 
     #[tokio::test]
-    async fn send_direct_message() {
+    async fn uds_send_direct_message() {
         let tmp = tempfile::tempdir().unwrap();
         let sock_path = tmp.path().join("send.sock");
+        let transport = Transport::unix(sock_path.clone());
 
-        let broker = Arc::new(Broker::bind(sock_path.clone(), true).await.unwrap());
+        let broker = Arc::new(Broker::bind(transport, true).await.unwrap());
         broker.start_and_wait().await;
 
-        // Connect agent-1 (keep writer alive to prevent disconnect)
-        let (_h1, _w, ack_rx) = connect_to_broker(&sock_path, "agent-1").await.unwrap();
-        // Wait for broker ACK
+        let transport = Transport::unix(sock_path.clone());
+        let (_h1, _w, ack_rx) = connect_to_broker(&transport, "agent-1").await.unwrap();
         let _ = ack_rx.await;
 
-        // Send a message from the broker
         let msg = direct_msg("broker", "agent-1", "hello from broker");
         broker.send(msg).await.unwrap();
 
-        // Agent-1 is connected — message should be deliverable
         assert_eq!(broker.connection_count().await, 1);
+
+        broker.shutdown().await;
+    }
+
+    // ── TCP tests ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn tcp_broker_binds_and_accepts_connection() {
+        let transport = Transport::tcp("127.0.0.1", 0);
+
+        let broker = Arc::new(Broker::bind(transport, true).await.unwrap());
+        let addr = broker.local_address();
+        broker.start_and_wait().await;
+
+        // Parse the actual port from local_address and connect via TCP
+        let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+        let transport = Transport::tcp("127.0.0.1", port);
+        let (_h1, _w, ack_rx) = connect_to_broker(&transport, "agent-1").await.unwrap();
+        let _ = ack_rx.await;
+        assert_eq!(broker.connection_count().await, 1);
+
+        broker.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn tcp_broker_multiple_agents() {
+        let transport = Transport::tcp("127.0.0.1", 0);
+
+        let broker = Arc::new(Broker::bind(transport, true).await.unwrap());
+        let addr = broker.local_address();
+        broker.start_and_wait().await;
+
+        let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+        let mut _writers = Vec::new();
+        for i in 1..=3 {
+            let transport = Transport::tcp("127.0.0.1", port);
+            let (_h, w, ack_rx) =
+                connect_to_broker(&transport, &format!("agent-{i}")).await.unwrap();
+            _writers.push((_h, w));
+            let _ = ack_rx.await;
+        }
+
+        assert_eq!(broker.connection_count().await, 3);
+        let agents = broker.connected_agents().await;
+        for i in 1..=3 {
+            assert!(agents.contains(&format!("agent-{i}")));
+        }
+
+        broker.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn tcp_direct_message() {
+        let transport = Transport::tcp("127.0.0.1", 0);
+
+        let broker = Arc::new(Broker::bind(transport, true).await.unwrap());
+        let addr = broker.local_address();
+        broker.start_and_wait().await;
+
+        let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+        let transport = Transport::tcp("127.0.0.1", port);
+        let (_h1, _w, ack_rx) = connect_to_broker(&transport, "agent-1").await.unwrap();
+        let _ = ack_rx.await;
+
+        // Send a message from the broker to agent-1
+        let msg = direct_msg("broker", "agent-1", "hello from TCP broker");
+        broker.send(msg).await.unwrap();
+
+        assert_eq!(broker.connection_count().await, 1);
+        broker.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn tcp_broker_rejects_bad_registration() {
+        let transport = Transport::tcp("127.0.0.1", 0);
+
+        let broker = Arc::new(Broker::bind(transport, true).await.unwrap());
+        let addr = broker.local_address();
+        broker.start_and_wait().await;
+
+        let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+
+        // Connect without a proper registration message
+        let stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        let (_, mut writer) = stream.into_split();
+        writer.write_all(b"not valid json\n").await.unwrap();
+        writer.flush().await.unwrap();
+        drop(writer);
+
+        assert_eq!(broker.connection_count().await, 0);
+        broker.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn transport_serialization_roundtrip() {
+        let unix = Transport::unix("/tmp/test.sock");
+        let json = serde_json::to_string(&unix).unwrap();
+        let back: Transport = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.address_string(), "/tmp/test.sock");
+
+        let tcp = Transport::tcp("0.0.0.0", 8080);
+        let json = serde_json::to_string(&tcp).unwrap();
+        let back: Transport = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.address_string(), "0.0.0.0:8080");
+    }
+
+    #[tokio::test]
+    async fn tcp_broker_local_address_port_zero() {
+        let transport = Transport::tcp("127.0.0.1", 0);
+        let broker = Arc::new(Broker::bind(transport, true).await.unwrap());
+        let addr = broker.local_address();
+
+        // Should contain the actual port, not 0
+        assert_ne!(addr, "127.0.0.1:0");
+        let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+        assert!(port > 0);
+        assert!(port <= 65535);
 
         broker.shutdown().await;
     }

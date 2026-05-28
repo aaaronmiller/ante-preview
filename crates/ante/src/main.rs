@@ -10,6 +10,7 @@
 //!   ante diagram <file>  — Render Mermaid file to ASCII
 
 mod status;
+mod mcp_server;
 
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -23,7 +24,7 @@ use agent_sdk::claude::{
     SystemMessage, StreamEventMessage,
 };
 use agent_sdk::event::EventBus;
-use agent_sdk::hitl::{ApprovalManager, ApprovalDecision, RiskLevel};
+use agent_sdk::hitl::{ApprovalManager, ApprovalDecision, HitlMode, RiskLevel};
 use agent_sdk::hooks::registry::HookRegistry;
 use agent_sdk::init::first_run_setup;
 use agent_sdk::mcp::registry::{McpServerConfigEntry, McpToolRegistry};
@@ -71,6 +72,14 @@ enum Commands {
         #[arg(long)]
         no_hitl: bool,
 
+        /// HITL approval mode (per-request, batch-risk-threshold, approve-all)
+        #[arg(long)]
+        hitl_mode: Option<String>,
+
+        /// Risk threshold for auto-approval (safe, low, medium, high, critical)
+        #[arg(long)]
+        risk_threshold: Option<String>,
+
         /// Disable model routing (use default model)
         #[arg(long)]
         no_router: bool,
@@ -89,6 +98,14 @@ enum Commands {
         /// Skip HITL approval system
         #[arg(long)]
         no_hitl: bool,
+
+        /// HITL approval mode (per-request, batch-risk-threshold, approve-all)
+        #[arg(long)]
+        hitl_mode: Option<String>,
+
+        /// Risk threshold for auto-approval (safe, low, medium, high, critical)
+        #[arg(long)]
+        risk_threshold: Option<String>,
 
         /// Disable model routing
         #[arg(long)]
@@ -128,6 +145,14 @@ enum Commands {
     Diagram {
         /// Path to Mermaid file or inline source
         source: Vec<String>,
+    },
+
+    /// Internal MCP server (spawned as child process by main agent)
+    #[doc(hidden)]
+    InternalMcpServer {
+        /// Stub args placeholder
+        #[arg(hide = true)]
+        stub: Vec<String>,
     },
 }
 
@@ -294,9 +319,29 @@ impl AgentContext {
         }
     }
 
-    /// Connect MCP servers from settings.
+    /// Connect MCP servers from settings and register internal tools.
     async fn connect_mcp_servers(&mut self) {
         let mut registry = McpToolRegistry::new();
+
+        // ── Internal Ante tools server (diagram + todo) ──────────────────
+        let internal_entry = McpServerConfigEntry {
+            name: "ante-tools".to_string(),
+            command: std::env::current_exe().ok()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "ante".to_string()),
+            args: vec!["internal-mcp-server".to_string()],
+            auto_start: true,
+        };
+        match registry.register_server(internal_entry).await {
+            Ok(_) => {
+                eprintln!("[ante] Internal tools server connected");
+            }
+            Err(e) => {
+                eprintln!("[ante] warning: internal tools server failed: {e}");
+            }
+        }
+
+        // ── External MCP servers from settings ───────────────────────────
         for server_config in &self.settings.mcp_servers {
             if !server_config.auto_start {
                 continue;
@@ -432,6 +477,10 @@ impl AgentContext {
             ApprovalDecision::TimedOut => {
                 eprintln!("  ⏱️  Timed out");
                 Err("Approval timed out".to_string())
+            }
+            ApprovalDecision::Modify(_) => {
+                eprintln!("  ✅ Approved (with modifications)");
+                Ok(())
             }
         }
     }
@@ -1121,18 +1170,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             model,
             no_memory,
             no_hitl,
+            hitl_mode,
+            risk_threshold,
             no_router,
         } => {
-            handle_query(prompt, model, no_memory, no_hitl, no_router).await?;
+            handle_query(prompt, model, no_memory, no_hitl, hitl_mode, risk_threshold, no_router).await?;
         }
         Commands::Repl {
             model,
             no_memory,
             no_hitl,
+            hitl_mode,
+            risk_threshold,
             no_router,
             cli_path,
         } => {
-            handle_repl(model, no_memory, no_hitl, no_router, cli_path).await?;
+            handle_repl(model, no_memory, no_hitl, hitl_mode, risk_threshold, no_router, cli_path).await?;
         }
         Commands::Memory { command } => {
             handle_memory_direct(command)?;
@@ -1145,6 +1198,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Diagram { source } => {
             handle_diagram(source)?;
+        }
+        Commands::InternalMcpServer { stub: _ } => {
+            // Hidden subcommand: MCP server providing diagram + todo tools.
+            // Spawned as a child process by the main Ante agent and
+            // communicates via JSON-RPC 2.0 over stdio.
+            mcp_server::run_mcp_server()?;
         }
     }
 
@@ -1165,6 +1224,8 @@ async fn handle_query(
     model: Option<String>,
     no_memory: bool,
     no_hitl: bool,
+    hitl_mode: Option<String>,
+    risk_threshold: Option<String>,
     no_router: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let prompt_text = if prompt.is_empty() {
@@ -1225,6 +1286,26 @@ async fn handle_query(
 
     if let Some(ref m) = selected_model {
         options.model = Some(m.clone());
+    }
+
+    // Apply HITL mode and risk threshold
+    if let Some(ref mode_str) = hitl_mode {
+        if let Some(mode) = HitlMode::from_str(mode_str) {
+            if let Some(ref mut approval) = ctx.approval {
+                *approval = std::mem::take(approval).with_mode(mode);
+            }
+        } else {
+            eprintln!("[ante] Warning: unknown HITL mode '{mode_str}', using default");
+        }
+    }
+    if let Some(ref threshold_str) = risk_threshold {
+        if let Some(level) = RiskLevel::from_str(threshold_str) {
+            if let Some(ref mut approval) = ctx.approval {
+                *approval = std::mem::take(approval).with_risk_threshold(level);
+            }
+        } else {
+            eprintln!("[ante] Warning: unknown risk threshold '{threshold_str}', using default");
+        }
     }
 
     if no_hitl {
@@ -1309,6 +1390,8 @@ async fn handle_repl(
     model: Option<String>,
     no_memory: bool,
     no_hitl: bool,
+    hitl_mode: Option<String>,
+    risk_threshold: Option<String>,
     no_router: bool,
     cli_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1353,6 +1436,27 @@ async fn handle_repl(
     if no_router {
         ctx.router = None;
     }
+
+    // Apply HITL mode and risk threshold
+    if let Some(ref mode_str) = hitl_mode {
+        if let Some(mode) = HitlMode::from_str(mode_str) {
+            if let Some(ref mut approval) = ctx.approval {
+                *approval = std::mem::take(approval).with_mode(mode);
+            }
+        } else {
+            eprintln!("[ante] Warning: unknown HITL mode '{mode_str}', using default");
+        }
+    }
+    if let Some(ref threshold_str) = risk_threshold {
+        if let Some(level) = RiskLevel::from_str(threshold_str) {
+            if let Some(ref mut approval) = ctx.approval {
+                *approval = std::mem::take(approval).with_risk_threshold(level);
+            }
+        } else {
+            eprintln!("[ante] Warning: unknown risk threshold '{threshold_str}', using default");
+        }
+    }
+
     if no_hitl {
         ctx.approval = None;
     }
