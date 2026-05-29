@@ -72,12 +72,9 @@ Adds or overrides providers and models on top of the built-in catalog. Both top-
 }
 ```
 
-Supported `wire_style`: `AnthropicMessage`, `OpenAiCompatible`, `OpenAiResponse`, `Gemini`.
-Supported `thinking`: `Disabled`, `Enabled`, `Deep`, `Max`.
-
 Malformed provider or model entries are skipped individually and reported at startup. Valid entries in the same file still load.
 
-See [Providers](/configuration/providers#custom-catalog) for the full schema, authentication forms, and resolution rules.
+See the [Catalog Reference](/reference/catalog-reference#catalogjson-schema) for the full schema, authentication forms, and resolution rules, and [Providers](/configuration/providers#custom-catalog) for customization recipes.
 
 ## `AGENTS.md`
 
@@ -126,7 +123,8 @@ AGENTS.md               # Project instructions
 ## Related
 
 - [Preferences](/configuration/preference) — full `settings.json` reference and environment variables
-- [Providers](/configuration/providers) — `catalog.json` schema and provider IDs
+- [Catalog Reference](/reference/catalog-reference) — `catalog.json` schema, built-in providers, and model IDs
+- [Providers](/configuration/providers) — choosing a provider and customization recipes
 - [Skills](/extend/skills) — skill directory layout
 - [Sub-agents](/extend/subagents) — sub-agent directory layout
 - [Memory](/extend/memory) — auto-memory format
