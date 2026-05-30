@@ -389,9 +389,15 @@ impl AgentContext {
     }
 
     /// Render and print the current status bar to stderr.
+    /// Uses two-line detailed view for color terminals, compact for no-color.
     fn print_status(&self) {
-        let line = self.status_bar.render();
-        eprint!("\r{}", line);
+        if self.status_bar.is_color() {
+            let (r1, r2) = self.status_bar.render_detailed();
+            eprint!("\r{}      \n{}", r1, r2);
+        } else {
+            let line = self.status_bar.render();
+            eprint!("\r{}", line);
+        }
     }
 
     /// Get memory context for a project as a formatted string.
@@ -709,8 +715,8 @@ async fn stream_response(
                     ctx.budget_snapshot.total_cost += cost;
                 }
 
-                // Update status bar with latest usage
-                ctx.status_bar.add_tokens(
+                // Update status bar with latest cumulative usage
+                ctx.status_bar.set_usage(
                     ctx.budget_snapshot.input_tokens,
                     ctx.budget_snapshot.output_tokens,
                     ctx.budget_snapshot.total_cost,
@@ -788,6 +794,8 @@ async fn handle_control_request(
                     );
                     let result = bus.emit(&payload).await;
                     if !result.decision.is_allowed() {
+                        ctx.status_bar.track_tool_blocked();
+                        ctx.status_bar.track_hook_blocked();
                         client
                             .respond_control_request_error(request_id, &format!("Blocked by hook: {:?}", result.hooks_executed))
                             .await?;
@@ -799,6 +807,8 @@ async fn handle_control_request(
             // Check HITL approval
             if let (Some(name), Some(input)) = (&tool_name, &tool_input) {
                 if let Err(reason) = ctx.check_hitl(name, input).await {
+                    ctx.status_bar.track_tool_blocked();
+                    ctx.status_bar.track_hitl_denied();
                     client
                         .respond_control_request_error(request_id, &format!("Denied by HITL: {reason}"))
                         .await?;
@@ -807,6 +817,9 @@ async fn handle_control_request(
             }
 
             // Default: allow if HITL passes
+            ctx.status_bar.track_tool_ok();
+            ctx.status_bar.track_hook_fired();
+            ctx.status_bar.track_hitl_approved();
             client
                 .respond_control_request_error(request_id, "HITL approved — tool permitted")
                 .await?;
@@ -1256,12 +1269,23 @@ async fn handle_query(
     // Show startup banner
     ctx.show_banner();
 
-    // Update status bar with MCP count
+    // Update status bar with MCP count, memory entries, and todos
     if let Some(ref reg) = ctx.mcp_registry {
         let tools: Vec<_> = reg.list_tools();
+        let connected_count = tools.iter().map(|t| &t.server).collect::<std::collections::HashSet<_>>().len();
         ctx.status_bar.set_mcp_servers(
-            tools.iter().map(|t| &t.server).collect::<std::collections::HashSet<_>>().len()
+            ctx.settings.mcp_servers.len(),
+            connected_count,
         );
+    }
+    if let Some(ref mem) = ctx.memory {
+        ctx.status_bar.set_memory_entries(mem.search("").len());
+    }
+    if let Some(ref todos) = ctx.todo {
+        let items = todos.list();
+        let active = items.iter().filter(|i| !i.done).count() as u32;
+        let done = items.iter().filter(|i| i.done).count() as u32;
+        ctx.status_bar.set_todo_counts(active, done);
     }
 
     // Build Claude options
@@ -1416,12 +1440,23 @@ async fn handle_repl(
     // Show startup banner
     ctx.show_banner();
 
-    // Update status bar with MCP count
+    // Update status bar with MCP count, memory entries, and todos
     if let Some(ref reg) = ctx.mcp_registry {
         let tools: Vec<_> = reg.list_tools();
+        let connected_count = tools.iter().map(|t| &t.server).collect::<std::collections::HashSet<_>>().len();
         ctx.status_bar.set_mcp_servers(
-            tools.iter().map(|t| &t.server).collect::<std::collections::HashSet<_>>().len()
+            ctx.settings.mcp_servers.len(),
+            connected_count,
         );
+    }
+    if let Some(ref mem) = ctx.memory {
+        ctx.status_bar.set_memory_entries(mem.search("").len());
+    }
+    if let Some(ref todos) = ctx.todo {
+        let items = todos.list();
+        let active = items.iter().filter(|i| !i.done).count() as u32;
+        let done = items.iter().filter(|i| i.done).count() as u32;
+        ctx.status_bar.set_todo_counts(active, done);
     }
 
     // Build Claude options

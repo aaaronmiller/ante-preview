@@ -3,6 +3,19 @@
 ## [Unreleased]
 
 ### Added
+- Expanded status bar design: surface tool call ok/fail/blocked, sub-agent active/completed/failed, hooks fired/blocked, HITL approved/denied, memory entries, todo counts, MCP connected/configured ratio, budget percentage, turns/sec rate
+- Status bar semantic color palette: cyan (primary), green (ok), yellow (warn), red (critical), blue (stats), purple (agents), gray (muted) — no rainbow vomit, every color has a job
+- Two layout modes: compact single-line (≥60ch) and detailed two-line (≥80ch)
+- Context usage visual bar (8 unicode segments) in detailed mode
+- Session indicator: green `●` (healthy), yellow `◉` (warning), red `◉` (critical), red `◆` (failures)
+- `StatusBar::set_usage(prompt, completion, cost)` — cumulative replacement for correct double-counting fix
+- `StatusBar::is_color()` getter for caller-side layout decisions
+- Integration test scenario: `scenarios/status-bar-test/` with binary smoke, init, agent list/match, memory, todo, diagram, and status bar unit tests
+- Sub-agent hook dispatch integration test: 5 tests covering callback invocation, wrong event type filtering, error non-blocking, deny decision propagation, and multi-hook chaining
+
+### Fixed
+- Status bar token/cost double-counting: `add_tokens` was receiving cumulative `budget_snapshot` values each turn, causing exponential over-reporting. Changed callers to `set_usage()` which replaces rather than accumulates.
+- Removed unused status bar code: `C_WHITE`, `BOLD`, `bold()`, `set_color()`, `set_max_context()`, `set_max_cost()`, `add_tokens()`, `track_tool_failure()`, `set_subagent_stats()`, `set_risk_level()` — left over from pre-redesign API
 - TCP transport for inter-agent broker: `Transport::Tcp` with `Transport::tcp()`, `local_address()`, full test coverage
 - `--hitl-mode` and `--risk-threshold` CLI arguments for `ante query` and `ante repl` commands
 - `RiskLevel::from_str()` for string-to-enum parsing in CLI arg wiring
