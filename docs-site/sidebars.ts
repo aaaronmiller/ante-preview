@@ -83,6 +83,7 @@ const sidebars: SidebarsConfig = {
         'antix/concepts/organizations',
         'antix/concepts/virtual-keys',
         'antix/concepts/endpoints',
+        'antix/concepts/models',
         'antix/concepts/error-handling',
         'antix/concepts/security',
       ],
