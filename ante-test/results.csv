@@ -1,0 +1,5 @@
+scenario,passed,response_word_count,keywords_match_pct,time_seconds,returncode
+basic-query,True,60,100.0,9.35,0
+db-comparison,True,62,100.0,7.57,0
+rust-function,True,114,66.7,16.21,0
+error-handling,True,41,33.3,4.99,0

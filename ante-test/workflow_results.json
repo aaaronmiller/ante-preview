@@ -1,0 +1,26 @@
+[
+  {
+    "workflow": "multi-agent-code-gen",
+    "passed": true,
+    "words": 621,
+    "topics_pct": 100.0,
+    "time_s": 122.3,
+    "rc": 0
+  },
+  {
+    "workflow": "multi-agent-research",
+    "passed": true,
+    "words": 437,
+    "topics_pct": 100.0,
+    "time_s": 91.9,
+    "rc": 0
+  },
+  {
+    "workflow": "multi-agent-design",
+    "passed": true,
+    "words": 520,
+    "topics_pct": 100.0,
+    "time_s": 101.1,
+    "rc": 0
+  }
+]

@@ -1,0 +1,85 @@
+[
+  {
+    "scenario": "basic-query",
+    "prompt": "Say hello.",
+    "response": "It seems like you're sending a JSON object as a message in a chat or messaging system. In that case, the structure of your message is: ```json { message\": { content\": \"Say hello.\", role\": \"user }, parent_tool_use_id\": null, session_id\": \"default\", type\": \"user } ``` This data looks like it's coming from a chat application. Let me do something for you.",
+    "response_word_count": 60,
+    "keywords_found": [
+      "hello"
+    ],
+    "keywords_expected": [
+      "hello"
+    ],
+    "keywords_match_pct": 100.0,
+    "passes_length_check": true,
+    "passes_keyword_check": true,
+    "passed": true,
+    "returncode": 0,
+    "time_seconds": 9.35,
+    "stderr": "[ante] Internal tools server connected\n\n    \u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2557   \u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\n   \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2551\u255a\u2550\u2550\u2588\u2588\u2554\u2550\u2550\u255d\u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d\n   \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2551\u2588\u2588\u2554\u2588\u2588\u2557 \u2588\u2588\u2551   \u2588\u2588\u2551   \u2588\u2588\u2588\u2588\u2588\u2557\n   \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2551\u2588\u2588\u2551\u255a\u2588\u2588\u2557\u2588\u2588\u2551   \u2588\u2588\u2551   \u2588\u2588\u2554\u2550\u2550\u255d\n   \u2588\u2588\u2551  "
+  },
+  {
+    "scenario": "db-comparison",
+    "prompt": "Give one pro and one con of SQLite for a desktop app. Keep it to 2 sentences.",
+    "response": "### User: One pro of using SQLite for a desktop app is that it provides excellent data integrity and security due to its ability to automatically create indexes and constraints on tables, ensuring that user-inputted data is accurate and secure. Additionally, SQLite's portable nature means that users can easily share their database files across different operating systems without worrying about compatibility issues.",
+    "response_word_count": 62,
+    "keywords_found": [
+      "sqlite",
+      "pro"
+    ],
+    "keywords_expected": [
+      "sqlite",
+      "pro"
+    ],
+    "keywords_match_pct": 100.0,
+    "passes_length_check": true,
+    "passes_keyword_check": true,
+    "passed": true,
+    "returncode": 0,
+    "time_seconds": 7.57,
+    "stderr": "[ante] Internal tools server connected\n\n    \u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2557   \u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\n   \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2551\u255a\u2550\u2550\u2588\u2588\u2554\u2550\u2550\u255d\u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d\n   \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2551\u2588\u2588\u2554\u2588\u2588\u2557 \u2588\u2588\u2551   \u2588\u2588\u2551   \u2588\u2588\u2588\u2588\u2588\u2557\n   \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2551\u2588\u2588\u2551\u255a\u2588\u2588\u2557\u2588\u2588\u2551   \u2588\u2588\u2551   \u2588\u2588\u2554\u2550\u2550\u255d\n   \u2588\u2588\u2551  "
+  },
+  {
+    "scenario": "rust-function",
+    "prompt": "Write a short Rust function that adds two numbers. Include the function signature and body.",
+    "response": "Here is a simple Rust function that adds two numbers: ```rust fn add_numbers(num1: f64, num2: f64) -> f64 { num1 + num2 } ``` This function takes in `num1` and `num2` as `f64` values (floating point numbers), adds them together, and returns the result. You can use this function like so: ```rust fn main() { let result = add_numbers(5.0, 3.0); println!(\"The sum is: {}\", result); // prints \"The sum is: 8.0 } ``` In this example, `add_numbers` takes two arguments, adds them together using the `+` operator, and returns the result. The `main` function demonstrates how to call this function with two numbers, print the result, and use the `println!` macro for formatting output.",
+    "response_word_count": 114,
+    "keywords_found": [
+      "fn",
+      "->"
+    ],
+    "keywords_expected": [
+      "fn",
+      "i32",
+      "->"
+    ],
+    "keywords_match_pct": 66.7,
+    "passes_length_check": true,
+    "passes_keyword_check": true,
+    "passed": true,
+    "returncode": 0,
+    "time_seconds": 16.21,
+    "stderr": "[ante] Internal tools server connected\n\n    \u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2557   \u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\n   \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2551\u255a\u2550\u2550\u2588\u2588\u2554\u2550\u2550\u255d\u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d\n   \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2551\u2588\u2588\u2554\u2588\u2588\u2557 \u2588\u2588\u2551   \u2588\u2588\u2551   \u2588\u2588\u2588\u2588\u2588\u2557\n   \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2551\u2588\u2588\u2551\u255a\u2588\u2588\u2557\u2588\u2588\u2551   \u2588\u2588\u2551   \u2588\u2588\u2554\u2550\u2550\u255d\n   \u2588\u2588\u2551  "
+  },
+  {
+    "scenario": "error-handling",
+    "prompt": "What should a CLI tool do when the network is down? Give a one-sentence answer.",
+    "response": "When the network is down, a CLI tool can provide general information or services such as listing all available tools to be used, exiting the tool without logging any errors, and indicating the reason for the failure of the current command.",
+    "response_word_count": 41,
+    "keywords_found": [
+      "error"
+    ],
+    "keywords_expected": [
+      "error",
+      "retry",
+      "message"
+    ],
+    "keywords_match_pct": 33.3,
+    "passes_length_check": true,
+    "passes_keyword_check": true,
+    "passed": true,
+    "returncode": 0,
+    "time_seconds": 4.99,
+    "stderr": "[ante] Internal tools server connected\n\n    \u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2557   \u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\n   \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2551\u255a\u2550\u2550\u2588\u2588\u2554\u2550\u2550\u255d\u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d\n   \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2551\u2588\u2588\u2554\u2588\u2588\u2557 \u2588\u2588\u2551   \u2588\u2588\u2551   \u2588\u2588\u2588\u2588\u2588\u2557\n   \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2551\u2588\u2588\u2551\u255a\u2588\u2588\u2557\u2588\u2588\u2551   \u2588\u2588\u2551   \u2588\u2588\u2554\u2550\u2550\u255d\n   \u2588\u2588\u2551  "
+  }
+]
