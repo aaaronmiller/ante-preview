@@ -20,6 +20,8 @@ Ante is an **AI-native, cloud-native, local-first agent runtime** built by [Anti
 Today it's the lightest, fastest terminal agent you can run: bring your own key, switch between 12+ providers freely, or go fully offline with local models — no account required. That same tiny core is the point. It's light enough to run by the *thousands* — the substrate we're building for self-organizing intelligence.
 
 > **We care about the harness, not the model or the prompts.**
+>
+> **Documentation is the new source code.**
 
 Most agents ship a Node or Python runtime and a tree of dependencies — fine for a single chat, ruinous when you want a hundred running at once. Ante is hand-written Rust with the heavy parts — `Grep`, `git`, and local inference — embedded in the same binary and run in the same process. The result: **~7× less memory** than Claude Code across 20 parallel tasks, **#1 on the public [Terminal Bench](docs-site/docs/benchmarks/eval.mdx) 1.0 leaderboard**, and a deliberate resistance to AI-generated slop.
 
@@ -259,6 +261,8 @@ Server mode runs Ante as a long-lived daemon that communicates over a structured
 </details>
 
 ## Documentation
+
+> **Documentation is the new source code.**
 
 Full documentation is available at [docs.antigma.ai](https://docs.antigma.ai).
 The source code is in `docs-site/docs`
