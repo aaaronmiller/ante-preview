@@ -9,6 +9,7 @@ pub mod init;
 pub mod mcp;
 pub mod memory;
 pub mod router;
+pub mod sessions;
 pub mod settings;
 pub mod stdio;
 pub mod ui;

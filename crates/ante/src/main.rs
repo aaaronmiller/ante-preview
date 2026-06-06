@@ -1,8 +1,10 @@
 //! Ante — extensible agent runtime wrapping Claude Code.
 //!
 //! Modes:
+//!   ante                 — Interactive REPL (default; session recording always on)
+//!   ante --continue      — REPL, recovering the most recent session for this directory
+//!   ante --resume <id>   — REPL, recovering a specific session
 //!   ante query <prompt>  — One-shot query with full Ante tooling
-//!   ante repl            — Interactive session with extensibility features
 //!   ante init            — First-run setup
 //!   ante memory <cmd>    — Direct memory operations
 //!   ante todo <cmd>      — Direct todo list operations
@@ -13,7 +15,7 @@ mod status;
 mod mcp_server;
 
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use status::{render_banner, StatusBar};
 
@@ -31,6 +33,7 @@ use agent_sdk::mcp::registry::{McpServerConfigEntry, McpToolRegistry};
 use agent_sdk::memory::store::MemoryStore;
 use agent_sdk::memory::server::MemoryServer;
 use agent_sdk::router::ModelRouter;
+use agent_sdk::sessions::SessionManager;
 use agent_sdk::settings::load_settings;
 use agent_sdk::ui::diagram::render;
 use agent_sdk::ui::todo::TodoList;
@@ -47,14 +50,54 @@ use clap::{Parser, Subcommand};
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "ante", about = "Ante — extensible agent runtime")]
+#[command(name = "ante", version, about = "Ante — extensible agent runtime")]
 struct Cli {
+    // ── Default mode: interactive REPL (ante ─ no subcommand) ─────────
+    /// Continue from the most recent session in this directory
+    #[arg(short, long)]
+    continue_session: bool,
+
+    /// Resume a specific session by ID (REPL mode)
+    #[arg(long)]
+    resume: Option<String>,
+
+    /// Model override (e.g. claude-sonnet-4-5)
+    #[arg(long)]
+    model: Option<String>,
+
+    /// Skip memory context injection
+    #[arg(long)]
+    no_memory: bool,
+
+    /// Skip HITL approval system
+    #[arg(long)]
+    no_hitl: bool,
+
+    /// HITL approval mode (per-request, batch-risk-threshold, approve-all)
+    #[arg(long)]
+    hitl_mode: Option<String>,
+
+    /// Risk threshold for auto-approval (safe, low, medium, high, critical)
+    #[arg(long)]
+    risk_threshold: Option<String>,
+
+    /// Disable model routing (use default model)
+    #[arg(long)]
+    no_router: bool,
+
+    /// Path to Claude CLI binary
+    #[arg(long)]
+    cli_path: Option<PathBuf>,
+
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Interactive REPL (default — just run `ante`)
+    Repl,
+
     /// One-shot query
     Query {
         /// Prompt text
@@ -85,37 +128,6 @@ enum Commands {
         no_router: bool,
     },
 
-    /// Interactive REPL session
-    Repl {
-        /// Model override
-        #[arg(long)]
-        model: Option<String>,
-
-        /// Skip memory context injection
-        #[arg(long)]
-        no_memory: bool,
-
-        /// Skip HITL approval system
-        #[arg(long)]
-        no_hitl: bool,
-
-        /// HITL approval mode (per-request, batch-risk-threshold, approve-all)
-        #[arg(long)]
-        hitl_mode: Option<String>,
-
-        /// Risk threshold for auto-approval (safe, low, medium, high, critical)
-        #[arg(long)]
-        risk_threshold: Option<String>,
-
-        /// Disable model routing
-        #[arg(long)]
-        no_router: bool,
-
-        /// Path to Claude CLI binary
-        #[arg(long)]
-        cli_path: Option<PathBuf>,
-    },
-
     /// First-run setup
     Init {
         /// Force re-initialization
@@ -139,6 +151,12 @@ enum Commands {
     Agents {
         #[command(subcommand)]
         command: AgentsCommands,
+    },
+
+    /// Session management (list, show, resume)
+    Sessions {
+        #[command(subcommand)]
+        command: SessionCommands,
     },
 
     /// Render Mermaid diagram to ASCII
@@ -174,6 +192,29 @@ enum MemoryCommands {
         project: String,
         #[arg(long, default_value = "10")]
         max: usize,
+    },
+}
+
+#[derive(Subcommand)]
+enum SessionCommands {
+    /// List all recorded sessions
+    List {
+        /// Project directory to filter by
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Show details and messages from a session
+    Show {
+        /// Session ID (UUID)
+        id: String,
+        /// Number of recent messages to show
+        #[arg(long, default_value = "10")]
+        messages: usize,
+    },
+    /// Resume a session (inject its context into a new REPL)
+    Resume {
+        /// Session ID (UUID)
+        id: String,
     },
 }
 
@@ -226,6 +267,7 @@ struct AgentContext {
     budget_snapshot: BudgetSnapshot,
     ante_dir: PathBuf,
     status_bar: StatusBar,
+    sessions: Option<SessionManager>,
 }
 
 impl AgentContext {
@@ -303,6 +345,10 @@ impl AgentContext {
         // ── Status bar ───────────────────────────────────────────────────
         let status_bar = StatusBar::new(None);
 
+        // ── Session manager ──────────────────────────────────────────────
+        let sessions_root = ante_dir.join("sessions");
+        let sessions = Some(SessionManager::new(sessions_root));
+
         AgentContext {
             settings,
             event_bus: Some(event_bus),
@@ -316,6 +362,7 @@ impl AgentContext {
             budget_snapshot,
             ante_dir,
             status_bar,
+            sessions,
         }
     }
 
@@ -555,11 +602,17 @@ fn user_prompt_payload(base: &BasePayload, prompt: &str) -> UserPromptPayload {
 
 // ─── REPL Loop ──────────────────────────────────────────────────────────────
 
-async fn run_repl(ctx: &mut AgentContext, cli_options: ClaudeOptions) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_repl_with_options(
+    ctx: &mut AgentContext,
+    cli_options: ClaudeOptions,
+    continue_session: bool,
+    resume_session_id: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Connect MCP servers
     ctx.connect_mcp_servers().await;
 
-    let bp = base_payload(&std::env::current_dir().unwrap_or_default());
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let bp = base_payload(&cwd);
 
     // Fire session start event
     if let Some(ref bus) = ctx.event_bus {
@@ -577,7 +630,90 @@ async fn run_repl(ctx: &mut AgentContext, cli_options: ClaudeOptions) -> Result<
     ctx.print_status();
     eprintln!("Connected. Type /help for commands.\n");
 
+    // ── Start session logging ────────────────────────────────────────────
+    if let Some(ref sessions) = ctx.sessions {
+        let _ = sessions.start(&cwd, Some("anthropic"), Some(&model_name));
+    }
+
+    // ── Session recovery (opt-in: --continue or --resume) ────────────────
+    let recovered_context = if let Some(ref sid) = resume_session_id {
+        // Resume a specific session by ID
+        if let Some(ref sessions) = ctx.sessions {
+            match sessions.read_session(sid) {
+                Ok(Some(lines)) => {
+                    let messages: Vec<String> = lines.iter().filter_map(|line| {
+                        use agent_sdk::sessions::SessionLine;
+                        match line {
+                            SessionLine::Message(msg) => {
+                                let role = &msg.message.role;
+                                let content_str = match &msg.message.content {
+                                    serde_json::Value::String(s) => s.clone(),
+                                    serde_json::Value::Array(arr) => {
+                                        arr.iter()
+                                            .filter_map(|b| b.get("text")
+                                                .and_then(|t| t.as_str()))
+                                            .collect::<Vec<_>>()
+                                            .join("\n")
+                                    }
+                                    _ => String::new(),
+                                };
+                                if content_str.trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(format!("[{role}] {content_str}"))
+                                }
+                            }
+                            _ => None,
+                        }
+                    }).collect();
+
+                    if !messages.is_empty() {
+                        eprintln!("[ante] Resumed session {sid}");
+                        let ctx_str = messages.join("\n");
+                        Some(format!("\n[Previous session {sid} context]\n{ctx_str}\n[/Previous session context]\n"))
+                    } else {
+                        None
+                    }
+                }
+                Ok(None) => {
+                    eprintln!("[ante] Session {sid} not found");
+                    None
+                }
+                Err(e) => {
+                    eprintln!("[ante] Warning: failed to read session {sid}: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else if continue_session {
+        // Auto-recover the latest session for this directory
+        if let Some(ref sessions) = ctx.sessions {
+            match sessions.recover_context(&cwd, 20) {
+                Ok(Some((ctx_str, sid))) => {
+                    eprintln!("[ante] Continuing from session {sid}");
+                    Some(ctx_str)
+                }
+                Ok(None) => {
+                    eprintln!("[ante] No previous session for this directory");
+                    None
+                }
+                Err(e) => {
+                    eprintln!("[ante] Warning: session recovery failed: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        // Default: fresh session
+        None
+    };
+
     let mut line = String::new();
+    let mut first_turn = true;
     loop {
         print!("you> ");
         io::stdout().flush()?;
@@ -615,27 +751,35 @@ async fn run_repl(ctx: &mut AgentContext, cli_options: ClaudeOptions) -> Result<
             }
         }
 
-        // Check for memory context injection at first prompt
-        let has_memory_context = {
-            let project = PathBuf::from(".")
-                .canonicalize()
-                .ok()
-                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-                .unwrap_or_else(|| "default".to_string());
+        // Record user message in session log
+        if let Some(ref sessions) = ctx.sessions {
+            let _ = sessions.record_user_message(input);
+        }
 
-            if let Some(ctx_text) = ctx.get_memory_context(&project) {
-                // Send memory context as a system preamble before the user's prompt
-                let combined = format!("{}\n\n{}", ctx_text, input);
-                client.send_user_text(combined).await?;
-                true
+        // Build prompt with context injection on first turn only
+        let project = PathBuf::from(".")
+            .canonicalize()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .unwrap_or_else(|| "default".to_string());
+
+        let final_prompt = if first_turn {
+            first_turn = false;
+            if let Some(ref ctx_str) = recovered_context {
+                format!("{ctx_str}\n\n{input}")
+            } else if let Some(mem_ctx) = ctx.get_memory_context(&project) {
+                format!("{mem_ctx}\n\n{input}")
             } else {
-                false
+                input.to_string()
             }
+        } else if let Some(mem_ctx) = ctx.get_memory_context(&project) {
+            // Re-inject memory context each turn (it may change)
+            format!("{mem_ctx}\n\n{input}")
+        } else {
+            input.to_string()
         };
 
-        if !has_memory_context {
-            client.send_user_text(input).await?;
-        }
+        client.send_user_text(&final_prompt).await?;
 
         println!();
         stream_response(&mut client, ctx, &bp).await?;
@@ -648,6 +792,12 @@ async fn run_repl(ctx: &mut AgentContext, cli_options: ClaudeOptions) -> Result<
             );
             let _ = bus.emit(&payload).await;
         }
+    }
+
+    // ── End session logging ──────────────────────────────────────────────
+    if let Some(ref sessions) = ctx.sessions {
+        let total = ctx.budget_snapshot.input_tokens + ctx.budget_snapshot.output_tokens;
+        let _ = sessions.end(total);
     }
 
     // Fire session end event
@@ -685,6 +835,21 @@ async fn stream_response(
             }
             ClaudeMessage::Assistant(assistant) => {
                 render_assistant(assistant);
+
+                // Record assistant response in session log
+                let text_parts: Vec<&str> = assistant.content.iter().filter_map(|block| {
+                    match block {
+                        ContentBlock::Text(t) => Some(t.text.as_str()),
+                        _ => None,
+                    }
+                }).collect();
+                if !text_parts.is_empty() {
+                    let content = serde_json::json!(text_parts);
+                    if let Some(ref sessions) = ctx.sessions {
+                        let model = assistant.model.as_deref();
+                        let _ = sessions.record_assistant_message(content, model, None);
+                    }
+                }
             }
             ClaudeMessage::User(user) => {
                 render_user(user);
@@ -753,6 +918,31 @@ async fn stream_response(
                             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
                             .unwrap_or_else(|| "default".to_string());
                         ctx.auto_store_memory(content, &project);
+                    }
+                }
+
+                // Record Result as assistant response in session log
+                // (covers tool results and final text in the result payload)
+                if let Some(ref result_val) = result.result {
+                    if let Some(result_text) = result_val.as_str() {
+                        if !result_text.trim().is_empty() {
+                            let usage = result.usage.clone().map(|u| serde_json::to_value(u).unwrap_or_default());
+                            let content = serde_json::json!([{"type": "text", "text": result_text}]);
+                            if let Some(ref sessions) = ctx.sessions {
+                                // Use model name from status bar (set at connect time)
+                                let model = ctx.status_bar.model();
+                                let _ = sessions.record_assistant_message(content, model, usage);
+                            }
+                        }
+                    }
+                }
+
+                // Update session token tracking
+                if let Some(ref sessions) = ctx.sessions {
+                    if let Some(usage) = &result.usage {
+                        let total = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0)
+                            + usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                        sessions.add_tokens(total);
                     }
                 }
 
@@ -1174,7 +1364,9 @@ fn print_header(kind: &str, tag: Option<&str>) {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    match cli.command {
+    // Default (no subcommand) = interactive REPL with always-on recording & recovery
+    let subcommand = cli.command.unwrap_or(Commands::Repl);
+    match subcommand {
         Commands::Init { force } => {
             handle_init(force)?
         }
@@ -1189,16 +1381,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             handle_query(prompt, model, no_memory, no_hitl, hitl_mode, risk_threshold, no_router).await?;
         }
-        Commands::Repl {
-            model,
-            no_memory,
-            no_hitl,
-            hitl_mode,
-            risk_threshold,
-            no_router,
-            cli_path,
-        } => {
-            handle_repl(model, no_memory, no_hitl, hitl_mode, risk_threshold, no_router, cli_path).await?;
+        Commands::Repl => {
+            handle_repl(
+                cli.model,
+                cli.no_memory,
+                cli.no_hitl,
+                cli.hitl_mode,
+                cli.risk_threshold,
+                cli.no_router,
+                cli.cli_path,
+                cli.continue_session,
+                cli.resume,
+            ).await?;
+        }
+        Commands::Sessions { command } => {
+            handle_sessions(command)?;
         }
         Commands::Memory { command } => {
             handle_memory_direct(command)?;
@@ -1379,6 +1576,17 @@ async fn handle_query(
         return Ok(());
     }
 
+    // ── Start session logging ────────────────────────────────────────────
+    let cwd = std::env::current_dir().unwrap_or_default();
+    if let Some(ref sessions) = ctx.sessions {
+        let model_name = client.server_info()
+            .and_then(|info| info.get("model"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("claude");
+        let _ = sessions.start(&cwd, Some("anthropic"), Some(model_name));
+        let _ = sessions.record_user_message(&prompt_text);
+    }
+
     // Send query
     client.send_user_text(&prompt_text).await?;
 
@@ -1391,6 +1599,12 @@ async fn handle_query(
 
     // Stream response, handling control requests etc.
     stream_response(&mut client, &mut ctx, &bp).await?;
+
+    // ── End session logging ──────────────────────────────────────────────
+    if let Some(ref sessions) = ctx.sessions {
+        let total = ctx.budget_snapshot.input_tokens + ctx.budget_snapshot.output_tokens;
+        let _ = sessions.end(total);
+    }
 
     // Fire SessionEnd event
     if let Some(ref bus) = ctx.event_bus {
@@ -1418,6 +1632,8 @@ async fn handle_repl(
     risk_threshold: Option<String>,
     no_router: bool,
     cli_path: Option<PathBuf>,
+    continue_session: bool,
+    resume: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Run first-run setup if needed
     let _ = first_run_setup(false);
@@ -1496,19 +1712,34 @@ async fn handle_repl(
         ctx.approval = None;
     }
 
-    // Run the REPL
-    run_repl(&mut ctx, options).await?;
+    // Run the REPL with session options
+    run_repl_with_options(&mut ctx, options, continue_session, resume).await?;
 
     Ok(())
 }
 
 fn handle_memory_direct(command: MemoryCommands) -> Result<(), Box<dyn std::error::Error>> {
-    let ante_dir = std::env::var("HOME")
-        .map(|h| PathBuf::from(h).join(".ante"))
-        .unwrap_or_else(|_| PathBuf::from(".ante"));
+    // Use the shared memory path (settings default: ~/ai-wiki/.meta/ante-memory.db)
+    use agent_sdk::settings::load_settings;
+    let settings = load_settings().ok();
+    let mem_path = settings
+        .as_ref()
+        .map(|s| s.memory.db_path.clone())
+        .unwrap_or_else(|| {
+            PathBuf::from(
+                std::env::var("HOME")
+                    .unwrap_or_else(|_| ".".into()),
+            )
+            .join("ai-wiki")
+            .join(".meta")
+            .join("ante-memory.db")
+        });
 
-    let mem_path = ante_dir.join("memory").join("ante-memory.db");
-    let mut store = MemoryStore::open(mem_path, 20)
+    let max_memories = settings
+        .as_ref()
+        .map(|s| s.memory.max_context_memories)
+        .unwrap_or(20);
+    let mut store = MemoryStore::open(mem_path, max_memories)
         .map_err(|e| format!("Failed to open memory store: {e}"))?;
 
     match command {
@@ -1540,6 +1771,115 @@ fn handle_memory_direct(command: MemoryCommands) -> Result<(), Box<dyn std::erro
             }
         }
     }
+    Ok(())
+}
+
+fn handle_sessions(command: SessionCommands) -> Result<(), Box<dyn std::error::Error>> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let sessions_root = PathBuf::from(&home).join(".ante").join("sessions");
+    let mgr = SessionManager::new(sessions_root);
+
+    match command {
+        SessionCommands::List { project } => {
+            let sessions = match project {
+                Some(ref p) => mgr.list_sessions_for_project(Path::new(p))?,
+                None => mgr.list_sessions()?,
+            };
+
+            if sessions.is_empty() {
+                println!("No sessions found.");
+                return Ok(());
+            }
+
+            println!("Sessions:");
+            println!();
+            for s in &sessions {
+                let dur = match (&s.started_at, &s.ended_at) {
+                    (start, Some(end)) => {
+                        // Crude duration estimate from timestamps
+                        format!("{start} → {end}")
+                    }
+                    (start, None) => format!("{start} (active)"),
+                };
+                let model = s.model_id.as_deref().unwrap_or("?");
+                let msgs = s.message_count;
+                println!("  {:<38}  {:25}  {:12}  {} msgs  {}", s.session_id, s.project, model, msgs, dur);
+            }
+            println!();
+            println!("{} session(s) found.", sessions.len());
+        }
+        SessionCommands::Show { id, messages } => {
+            match mgr.read_session(&id)? {
+                None => {
+                    eprintln!("Session not found: {id}");
+                }
+                Some(lines) => {
+                    // Find the session header
+                    let mut provider = "?".to_string();
+                    let mut model = "?".to_string();
+                    let mut cwd = "?".to_string();
+                    let mut started = "?".to_string();
+
+                    let msg_lines: Vec<String> = lines.iter().filter_map(|line| {
+                        match line {
+                            agent_sdk::sessions::SessionLine::Session(h) => {
+                                provider = h.provider.clone().unwrap_or_default();
+                                model = h.model_id.clone().unwrap_or_default();
+                                cwd = h.cwd.clone().unwrap_or_default();
+                                started = h.timestamp.clone();
+                                None
+                            }
+                            agent_sdk::sessions::SessionLine::Message(msg) => {
+                                let role = &msg.message.role;
+                                let content_str = match &msg.message.content {
+                                    serde_json::Value::String(s) => s.clone(),
+                                    serde_json::Value::Array(arr) => {
+                                        arr.iter()
+                                            .filter_map(|b| b.get("text")
+                                                .and_then(|t| t.as_str()))
+                                            .collect::<Vec<_>>()
+                                            .join("\n")
+                                    }
+                                    other => other.to_string(),
+                                };
+                                let preview = content_str.lines()
+                                    .next()
+                                    .unwrap_or(&content_str)
+                                    .chars()
+                                    .take(120)
+                                    .collect::<String>();
+                                Some(format!("  [{role:12}] {preview}"))
+                            }
+                            _ => None,
+                        }
+                    }).collect();
+
+                    let total = msg_lines.len();
+                    let shown: Vec<&String> = msg_lines.iter().rev()
+                        .take(messages).rev().collect();
+
+                    println!("Session: {}", id);
+                    println!("  Project:  {cwd}");
+                    println!("  Provider: {provider}");
+                    println!("  Model:    {model}");
+                    println!("  Start:    {started}");
+                    println!("  Messages: {total} (showing last {})", shown.len());
+                    println!();
+                    for line in shown {
+                        println!("{line}");
+                    }
+                }
+            }
+        }
+        SessionCommands::Resume { id } => {
+            eprintln!("[ante] To resume session {id}, run:");
+            eprintln!("  ante --resume {id}");
+            eprintln!();
+            eprintln!("(Or use `ante --continue` to recover the latest session");
+            eprintln!(" for the current directory.)");
+        }
+    }
+
     Ok(())
 }
 

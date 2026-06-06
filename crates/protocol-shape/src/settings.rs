@@ -280,7 +280,7 @@ pub struct MemoryConfig {
 }
 
 fn default_memory_path() -> PathBuf {
-    PathBuf::from("~/.ante/memory.db")
+    PathBuf::from("~/ai-wiki/.meta/ante-memory.db")
 }
 
 fn default_max_context_memories() -> usize {

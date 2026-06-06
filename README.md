@@ -1,99 +1,320 @@
+# Ante — Extensible Agent Runtime
 
-<p align="center">
-  <img src="docs-site/static/assets/ante.png" width="80" alt="Ante" />
-</p>
+**Ante** is an extensible agent runtime wrapping Claude Code. It adds memory, hooks, tools, sessions, MCP servers, sub-agents, model routing, HITL approval, and wiki-memory to the upstream CLI — without losing any Claude Code capability.
 
-<p align="center">
-  <a href="https://discord.gg/CbAsUR434B"><img src="https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white" /></a>
-  <a href="https://docs.antigma.ai"><img src="https://img.shields.io/badge/Docs-docs.antigma.ai-orange?logo=safari&logoColor=white" /></a>
-  <a href="https://twitter.com/antigma_labs"><img src="https://img.shields.io/badge/X-@antigma__labs-black?logo=x&logoColor=white" /></a>
-  <a href="https://huggingface.co/Antigma"><img src="https://img.shields.io/badge/HuggingFace-Antigma-yellow?logo=huggingface&logoColor=white" /></a>
-</p>
+## Differentiators (vs. Upstream Claude Code)
 
-# Ante
+| Feature | Ante | Upstream Claude Code |
+|---------|------|---------------------|
+| **Session recording** | Always-on JSONL logging to `~/.ante/sessions/` — every exchange is recoverable | ❌ No session persistence |
+| **Session recovery** | `ante --continue` restores prior session context; `ante --resume <id>` targets a specific session | ❌ |
+| **Event hook system** | Bash / LLM / MCP-tool hooks on `PreToolUse`, `PostToolUse`, `PreCompact`, `SessionStart`, `SessionEnd`, and more | ❌ |
+| **Wiki-memory integration** | All agents share `~/ai-wiki/.meta/ante-memory.db` — symlinked to the [wiki-memory](https://github.com/cheta/wiki-memory) project's dream agent when installed | ❌ |
+| **Memory MCP server** | Embedded stdio MCP server (`memory_add`, `memory_search`, `memory_get_context` tools) in every session | ❌ |
+| **Sub-agents** | YAML/markdown-defined agent registry with best-match dispatch | ❌ |
+| **Model router** | Dynamic model selection per query based on capability scoring and cost | ❌ |
+| **Human-in-the-loop (HITL)** | Configurable approval modes: per-request, batch-risk-threshold, or approve-all | ❌ |
+| **Session management CLI** | `ante sessions list`, `ante sessions show <id>`, `ante sessions resume <id>` | ❌ |
+| **Context budget tracking** | Token and cost budgets with configurable warning thresholds | ❌ |
+| **Diagram rendering** | `ante diagram <mermaid-source>` — renders Mermaid to terminal ASCII | ❌ |
+| **Sensitive tool blocklist** | Configurable Bash/Write/Execute blocklist with danger-pattern matching | ❌ |
+| **Claude Code compatibility** | Reads `.claude/settings.json`, translates event names for cross-compat | ❌ (N/A) |
 
-> **⚠️ Alpha Preview**
-> Ante is currently in alpha and provided as a research preview. Expect breaking changes and incomplete functionality. macOS and Linux only.
+## Shared Features (Both Versions)
 
-Ante is an AI-native, cloud-native, local-first agent runtime built by [Antigma Labs](https://antigma.ai). A single ~15MB Rust binary with zero runtime dependencies — designed from the ground up for security, performance, and resistance to AI-generated slop.
+- Interactive REPL with Claude Code
+- One-shot query mode (`ante query "..."`)
+- File editing, Bash execution, web search via Claude Code
+- Per-directory `.claude/` project settings
+- MCP server support (configurable via `mcp_servers` in `settings.json`)
 
-## Key Features
-
-- **Lightweight agent core** — ~15MB binary, zero dependencies. Built for minimal overhead and maximum throughput.
-- **Native local models** — Built-in local inference integration. No API keys, no internet, no data leaving your device.
-- **Zero vendor lock-in** — Bring your own API key or local model. Switch between 12+ providers freely. No account required.
-- **Client-daemon architecture** — Run as an interactive TUI, headless CLI, or long-lived server (`ante serve`).
-- **Channel integrations** — Run Ante as a Slack or Discord bot with `ante gateway`.
-- **Multi-agent orchestration** — Spawn sub-agents, coordinate complex tasks across independent, decentralized, or centralized architectures.
-- **Extensible** — Custom skills, sub-agents, and persistent memory across sessions.
-- **Benchmark proven** — Topped the Terminal Bench 1.0 and 2.0 leaderboards. Public, reproducible evals.
-
-## Extensibility Features
-
-### 🪝 Hook System
-Custom event-driven hooks that fire before and after tool execution — block dangerous operations, log decisions, or inject context. Supports command hooks (script execution), prompt hooks (LLM-driven decisions), and MCP tool hooks.
+## Quick Start
 
 ```sh
-# Hooks defined in ~/.ante/settings.json
-ante -p "run a command safely"
+# Clone and build
+git clone <url> ante-spec
+cd ante-spec
+cargo build --release -p ante
+
+# First-run setup (creates ~/.ante/ and ~/ai-wiki/)
+./target/release/ante init
+
+# Start a fresh interactive session
+./target/release/ante
+
+# Continue the most recent session in this directory
+./target/release/ante --continue
+
+# Query once and exit
+./target/release/ante query "explain this code"
 ```
 
-### 🔌 MCP Ecosystem Integration
-Full MCP (Model Context Protocol) client with stdio transport. Connect any MCP server to extend Ante's tool ecosystem dynamically.
+## Wiki-Memory Integration
+
+Ante uses `~/ai-wiki` as the canonical shared memory location for all agents.
+
+### How it works
+
+- `MemoryStore` data lives at `~/ai-wiki/.meta/ante-memory.db`
+- When [wiki-memory](https://github.com/cheta/wiki-memory) is installed at `~/code/wiki-memory`, `ante init` creates a symlink: `~/ai-wiki → ~/code/wiki-memory/wiki`
+- The wiki-memory **dream agent** can process raw/ sources, consolidate observations, and auto-create skills from repeated patterns
+- All agents (pi, ante, Claude Code, etc.) share the same `~/ai-wiki` — what one learns, all know
+- The embedded memory MCP server (`ante memory add/search/context`) reads/writes the same database
+- wiki-memory hooks (`pre_compact.py`, `session_end.py`) are registered in `~/.ante/settings.json`
+
+### Architecture
+
+```
+~/code/wiki-memory/         # <-- git repo, changes propagate instantly via symlink
+  └── wiki/ → ~/ai-wiki     # <-- actual data directory
+      ├── pages/             #     auto-consolidated knowledge articles
+      ├── raw/               #     source observations
+      └── .meta/
+          └── ante-memory.db # <-- Ante MemoryStore (JSON-backed)
+
+~/.ante/settings.json        # --> memory.dbPath = ~/ai-wiki/.meta/ante-memory.db
+```
+
+> **No wiki-memory? No problem.** If the repo isn't present, `~/ai-wiki` is created as a plain directory; everything still works.
+
+## Launch Modes
+
+| Command | Mode | Description |
+|---------|------|-------------|
+| `ante` | **REPL** | Interactive session with Claude — full extensibility, session recording always on |
+| `ante --continue` | REPL | Same as above, but recovers the most recent session for the current directory |
+| `ante --resume <id>` | REPL | Same as above, but recovers a specific session by ID |
+| `ante query "..."` | **Headless** | One-shot query with full tooling — also records session |
+| `ante init` | Setup | Create `~/.ante/` directory structure, `~/ai-wiki/`, default hooks |
+| `ante memory add/search/context` | Direct | Direct memory operations (bypasses MCP server) |
+| `ante todo add/list/done/clear` | Direct | Direct todo list operations |
+| `ante sessions list/show/resume` | Direct | Session management (list, inspect, get resume command) |
+| `ante agents list/run` | Direct | Sub-agent registry and dispatch |
+| `ante diagram <mermaid>` | Direct | Render Mermaid to terminal ASCII |
+
+## All Arguments
+
+### Global (REPL mode — `ante`)
+
+| Argument | Description |
+|----------|-------------|
+| `--resume <id>` | Resume a specific session by ID |
+| `-c`, `--continue` | Recover the most recent session for the current directory |
+| `--model <name>` | Model override (e.g. `claude-sonnet-4-5`) |
+| `--no-memory` | Skip memory context injection |
+| `--no-hitl` | Disable human-in-the-loop approval |
+| `--hitl-mode <mode>` | HITL mode: `per-request`, `batch-risk-threshold`, `approve-all` |
+| `--risk-threshold <level>` | Auto-approval ceiling: `safe`, `low`, `medium`, `high`, `critical` |
+| `--no-router` | Disable dynamic model routing (uses Claude's default) |
+| `--cli-path <path>` | Path to Claude CLI binary |
+| `-h`, `--help` | Print help |
+| `-V`, `--version` | Print version |
+
+### Query mode (`ante query`)
+
+| Argument | Description |
+|----------|-------------|
+| `<prompt>` | Query text (positional, can be multiple words) |
+| `--model <name>` | Model override |
+| `--no-memory` | Skip memory context injection |
+| `--no-hitl` | Disable HITL |
+| `--hitl-mode <mode>` | HITL mode |
+| `--risk-threshold <level>` | Risk threshold |
+| `--no-router` | Disable model routing |
+
+### Init mode (`ante init`)
+
+| Argument | Description |
+|----------|-------------|
+| `--force` | Re-initialize (overwrites existing `settings.json`) |
+
+### Memory mode (`ante memory`)
+
+| Subcommand | Arguments | Description |
+|-----------|-----------|-------------|
+| `add` | `--content <text>`, `--tags <tags>`, `--project <name>` | Store a memory |
+| `search` | `--query <text>` | Search stored memories |
+| `context` | `--project <name>`, `--max <count>` | Get context for a project |
+
+### Sessions mode (`ante sessions`)
+
+| Subcommand | Arguments | Description |
+|-----------|-----------|-------------|
+| `list` | `--project <name>` | List sessions (optionally filtered by project) |
+| `show` | `--id <session-id>`, `--messages <N>` | Inspect a session (last N messages) |
+| `resume` | `--id <session-id>` | Print the `ante --resume` command |
+
+### Todo mode (`ante todo`)
+
+| Subcommand | Arguments | Description |
+|-----------|-----------|-------------|
+| `add` | `<text>` | Add a todo item |
+| `list` | — | List all items |
+| `done` | `--id <N>` | Mark item complete |
+| `clear` | — | Clear completed items |
+
+### Agents mode (`ante agents`)
+
+| Subcommand | Arguments | Description |
+|-----------|-----------|-------------|
+| `list` | — | List registered sub-agents |
+| `run` | `<task>` | Find best-match agent for a task |
+
+### Diagram mode (`ante diagram`)
+
+| Argument | Description |
+|----------|-------------|
+| `<mermaid-source>` | Mermaid source text to render |
+
+## Session System
+
+Sessions are recorded automatically in **every** mode (REPL and query). No opt-in needed.
+
+### Storage
+
+```
+~/.ante/sessions/
+  ├── YYYY-MM-DD-HHMMSS-<safe-path>/
+  │   ├── session.jsonl          # JSONL session log
+  │   └── transcript.md          # Human-readable transcript
+  └── sessions_index.json        # Fast-lookup index
+```
+
+### Format
+
+Each line in `session.jsonl` is a self-describing JSON object with a `"type"` discriminator:
+
+```jsonl
+{"type":"session","sessionId":"2026-06-05-143022-...","cwd":"/home/user/project","modelId":"claude-sonnet-4-5","provider":"anthropic","timestamp":"2026-06-05T14:30:22+00:00"}
+{"type":"message","messageId":"msg-...","message":{"role":"user","content":"explain this code"}}
+{"type":"message","messageId":"msg-...","message":{"role":"assistant","content":...}}
+{"type":"message","messageId":"msg-...","message":{"role":"tool_result","content":...}}
+{"type":"model_change","fromModel":"...","toModel":"..."}
+{"type":"thinking_level_change","fromLevel":"normal","toLevel":"high"}
+```
+
+This format is compatible with [coding_agent_session_search (cass)](https://github.com/cheta/coding_agent_session_search) — the `PiAgentConnector` reads these files directly.
+
+### CLI Commands
 
 ```sh
-# Configure MCP servers in ~/.config/mcp/mcp.json
+# List all sessions
+ante sessions list
+
+# List sessions for the current project
+ante sessions list --project $(basename $PWD)
+
+# Inspect a session (last 10 messages)
+ante sessions show --id 2026-06-05-143022-... --messages 10
+
+# Get the resume command for a session
+ante sessions resume --id 2026-06-05-143022-...
+```
+
+## Hook System
+
+Ante fires events throughout the agent lifecycle. Hooks can be shell commands, LLM prompts, MCP tool calls, or sub-agent dispatches.
+
+### Events
+
+| Event | Fires When |
+|-------|------------|
+| `SessionStart` | Session begins |
+| `SessionEnd` | Session ends |
+| `PreUserPromptSubmit` | Before user prompt is sent to Claude |
+| `PostUserPromptSubmit` | After user prompt is sent |
+| `PreToolUse` | Before a tool is invoked (blocking supported) |
+| `PostToolUse` | After a tool returns |
+| `PreCompact` | Before context compaction |
+| `PostCompact` | After context compaction |
+
+### Default Hooks
+
+Shipped with `ante init`:
+
+1. **Blocklist** (`block-danger.sh`) — blocks dangerous Bash commands matching blocklist patterns. Fires on `PreToolUse` for `Bash*` tools.
+2. **Pre-compact logger** (`pre_compact.py`) — logs memory and CPU usage before compaction. Fires on `PreCompact`.
+3. **Session-end logger** (`session_end.py`) — captures a session summary on exit. Fires on `SessionEnd`.
+
+Hook scripts live in `~/.ante/hooks/`. Edit them freely.
+
+## MCP Server Configuration
+
+Configure external MCP servers in `~/.ante/settings.json`:
+
+```json
 {
-  "mcpServers": {
-    "my-server": {
+  "mcpServers": [
+    {
+      "name": "filesystem",
       "command": "npx",
-      "args": ["-y", "@my/mcp-server"]
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "autoStart": true
+    },
+    {
+      "name": "time",
+      "command": "uvx",
+      "args": ["mcp-server-time"],
+      "lifecycle": "lazy"
     }
-  }
+  ]
 }
 ```
 
-### 👥 Multi-Agent Orchestration
-Sub-agent system with agent registry loading from Markdown files (YAML frontmatter), task decomposition via conjunction splitting, dependency-graph dispatch, and result synthesis with conflict detection.
+The embedded **memory MCP server** is started automatically in every session, exposing `memory_add`, `memory_search`, and `memory_get_context` tools.
 
-```sh
-# Agent definitions in ~/.ante/agents/
-ante -p "decompose this complex task across my agents"
+## Model Router
+
+Ante includes a dynamic model router that selects the best model for each query:
+
+```json
+{
+  "modelPool": [
+    {
+      "name": "Claude Sonnet",
+      "provider": "anthropic",
+      "modelId": "claude-sonnet-4-5",
+      "capabilityScore": 85,
+      "costPer1kInput": 0.003,
+      "costPer1kOutput": 0.015,
+      "tags": ["fast", "reasoning"]
+    },
+    {
+      "name": "Claude Haiku",
+      "provider": "anthropic",
+      "modelId": "claude-haiku-3-5",
+      "capabilityScore": 60,
+      "costPer1kInput": 0.0008,
+      "costPer1kOutput": 0.004,
+      "tags": ["fast", "cheap"]
+    }
+  ]
+}
 ```
 
-### 🧠 Persistent Memory
-JSON file-backed memory store with case-insensitive search, TF-IDF relevance ranking, project-scoped context retrieval, and automatic post-tool-use hook for learning from execution results.
+Disable with `--no-router` to use Claude's default model selection.
 
-### 🔀 Dynamic Model Router
-Rule-based task complexity classifier that selects the cheapest adequate model for simple tasks and the most capable model for complex ones. Configurable model pool with capability scores, cost tracking, and token budget estimation.
+## Human-in-the-Loop (HITL)
 
-### 🗣️ Inter-Agent Communication
-Local Unix domain socket broker enabling structured message passing between Ante instances on the same machine. Supports direct messaging, broadcasting, and pub-sub topics.
+Enable approval prompts for sensitive operations:
 
-### 👁️ Human-in-the-Loop Approval
-Risk-based permission system that pauses sensitive operations for user approval. Configurable risk tiers (Safe/Low/Medium/High/Critical) with substring pattern matching, per-tool sensitivity, and request timeout/expiry.
+```sh
+# Per-request approval (default when HITL is on)
+ante --hitl-mode per-request
 
-### 📋 Built-in Utilities
-- **Todo List** — Persistent task management with cross-session persistence
-- **Diagram Renderer** — Terminal-optimized Mermaid flowchart/sequence diagram rendering using box-drawing characters
+# Auto-approve low-risk operations
+ante --hitl-mode batch-risk-threshold --risk-threshold low
 
-## Usage
+# Approve everything automatically (CI/automation)
+ante --hitl-mode approve-all
 
-### Modes
+# Disable entirely
+ante --no-hitl
+```
 
-| Mode | Command | Description |
-|------|---------|-------------|
-| Interactive REPL | `ante repl` | Full interactive session with Claude, extensibility features, and status bar |
-| One-shot query | `ante query "prompt"` | Single prompt, streams response with full Ante tooling |
-| Initialize | `ante init` | Create `~/.ante/` directory structure, install default blocklist hook |
-| Memory | `ante memory <cmd>` | Direct memory operations (add, search, list) |
-| Todo | `ante todo <cmd>` | Direct todo list operations (add, list, done, clear) |
-| Agents | `ante agents <cmd>` | List available sub-agents or decompose a task |
-| Diagram | `ante diagram <file>` | Render a Mermaid diagram file to terminal ASCII |
+## Status Bar
 
-### Status Bar
-
-On startup, Ante displays a feature summary banner with connection stats:
+On REPL startup, Ante displays a feature summary:
 
 ```
     █████╗ ███╗   ██╗████████╗███████╗
@@ -107,323 +328,56 @@ On startup, Ante displays a feature summary banner with connection stats:
    model │ claude-sonnet-4
    ───────────────────────────────────────
    [✓] hooks 1  [✓] mcp 2  [✓] agents 5  [✓] memories 12
-   ═══════════════════════════════════════
 ```
 
-During a session, the status bar shows real-time metrics on the last line:
-
-```
-● claude-sonnet-4  ▏ctx ████░░░░░░ 45%  ▏$0.23  ▏14m  ▏MCP:2  ▏Mem:12  ▏Ag:5  ▏safe
-```
-
-| Field | Description |
-|-------|-------------|
-| `●` / `◉` | Indicator — ● normal, ◉ warning (context >50%), ◉ critical (>80%) |
-| Model | Current LLM model name |
-| `ctx ████░░ 45%` | Context window usage with visual progress bar |
-| `$0.23` | Cumulative session cost estimate |
-| `14m` | Session elapsed time |
-| `MCP:2` | Connected MCP servers |
-| `Mem:12` | Stored memory entries |
-| `Ag:5` | Loaded sub-agents |
-| `safe` | HITL risk level (safe/low/medium/high/critical) |
-
-### One-Shot Query
-
-```sh
-# Basic query
-ante query "find and fix the failing test"
-
-# With model override
-ante query --model claude-sonnet-4 "refactor the database module"
-
-# Disable features
-ante query --no-memory --no-hitl "run this command"
-```
-
-### Interactive REPL
-
-```sh
-# Start interactive session
-ante repl
-
-# With specific CLI binary
-ante repl --cli-path /path/to/claude
-
-# With model override
-ante repl --model claude-sonnet-4
-```
-
-### REPL Commands
+## REPL Commands
 
 | Command | Description |
 |---------|-------------|
 | `/help` | Show available commands |
 | `/budget` | Show token/cost usage this session |
 | `/interrupt` | Interrupt the current Claude response |
-| `/model <name>` | Switch to a different model |
-| `/info` | Show session info |
-| `/quit` | End session |
 
-### Configuration
+## Project Structure
 
-Ante loads settings from `~/.ante/settings.json`. Create it with default values:
+```
+crates/
+  ante/                     # CLI binary (main entry point)
+    src/main.rs             # CLI parsing, mode dispatch, agent context
+  agent-sdk/                # Core library
+    src/
+      agents/               # Sub-agent loader & broker protocol
+      event.rs              # EventBus, EventPayload types
+      hitl.rs               # Approval manager & risk levels
+      hooks/                # Hook registry, executor, blocklist
+      init.rs               # First-run setup (~/.ante/, ~/ai-wiki/)
+      mcp/                  # MCP client, registry, tool discovery
+      memory/               # MemoryStore, MemoryServer (embedded MCP)
+      router.rs             # Model routing engine
+      sessions/             # SessionManager, JSONL recording, recovery
+      settings.rs           # Settings loader (JSON)
+      todo.rs               # TodoList
+      ui/                   # Diagram renderer, status bar
+      claude.rs             # Claude CLI connection
+  protocol-shape/           # Shared types (Settings, EventType, etc.)
+```
+
+## Building from Source
 
 ```sh
-ante init
+cargo build --release -p ante
+./target/release/ante init
+./target/release/ante
 ```
 
-Key configuration sections:
-
-| Section | Description |
-|---------|-------------|
-| `hooks` | Pre/post tool execution hooks with rules, matchers, and definitions |
-| `mcpServers` | MCP server registry (command, args, auto-start, lifecycle) |
-| `agents` | Sub-agent directory and discovery settings |
-| `memory` | Memory store path, context limits, auto-indexing |
-| `modelPool` | Model entries for dynamic routing (capability score, cost, context) |
-| `contextBudget` | Token and cost limits with warning thresholds |
-| `claudeCompat` | Claude Code settings compatibility flags |
-| `sensitiveTools` | Tool patterns requiring HITL approval |
-
-### Claude Code Hook Compatibility
-
-If you already have Claude Code hooks in `.claude/settings.json`, Ante can merge them:
-
-```json
-{
-  "claudeCompat": {
-    "mergeClaudeSettings": true,
-    "translateEventNames": true
-  }
-}
-```
-
-### Building from Source
+For development:
 
 ```sh
-# Prerequisites: Rust toolchain (edition 2024)
-
-# Build the ante binary
-cd crates/ante
-cargo build --release
-
-# Build all crates
-cargo build --release  # from any crate directory
+cargo build -p ante
+# or with hot-reload:
+cargo watch -x 'build -p ante'
 ```
 
-The project has 4 crates:
-- `crates/ante/` — Application binary (integration layer)
-- `crates/agent-sdk/` — Agent primitives, hooks, MCP client, model router, memory, HITL, broker
-- `crates/exec/` — Process execution, MCP process manager
-- `crates/protocol-shape/` — Event payload schemas, hook decision types, settings
+## Credits
 
-## Performance
-**We care about the harness not the model nor the prompts.**
-
-Ante is designed for the **cellular-native** thesis: agents lightweight enough to run hundreds of replicas in parallel on a single machine. Its ~15MB Rust core uses a fraction of the memory, CPU, and disk I/O of comparable agents — making mass parallelism practical without specialized infrastructure.
-
-Docker resource usage across 20 parallel tasks (Ante vs Claude Code vs Opencode):
-
-![Resource Usage Comparison](docs-site/docs/benchmarks/compare_animated.gif)
-
-Across 20 parallel tasks, Ante uses **~7× less peak memory**, **~9× less average CPU**, and generates **~5× less total disk I/O** than Claude Code — while completing the same workload. See the [comparison table](docs-site/docs/benchmarks/compare_table.md) and the [benchmark details](docs-site/docs/benchmarks/eval.mdx) for the evaluation methodology and results.
-
-## Quick Start
-
-### Installation
-
-Ante is distributed as a single, self-contained binary with no external dependencies — just download and run.
-
-```sh
-curl -fsSL https://ante.run/install.sh | bash
-
-# Install a specific release channel
-curl -fsSL https://ante.run/install.sh | bash -s -- nightly
-```
-
-### Interactive TUI
-
-```sh
-ante
-```
-
-### Headless Mode
-
-```sh
-# Fix a bug
-ante -p "find and fix the failing test in src/auth"
-
-# Review a diff
-git diff | ante -p "review this for security issues"
-
-# Use a different provider
-ante --provider openai --model gpt-5.5 -p "refactor the database module"
-
-# Resume a saved session
-ante --resume ses_01ARZ3NDEKTSV4RRFFQ69G5FAV -p "now add tests"
-
-# Run fully offline with a local GGUF model
-ante --offline-model ~/.ante/models/Qwen3.5-9B-Q4_K_M.gguf \
-  -p "add error handling to src/main.rs"
-```
-
-### Server Mode
-
-```sh
-ante serve
-```
-
-### Gateway Mode
-
-```sh
-ante gateway
-```
-
-### Update Ante
-
-```sh
-ante update
-
-# One-off update from a different channel
-ante update --channel nightly
-```
-
-## Example Usages with TUI
-
-<table>
-<tr>
-<td width="50%">
-
-**[Providing Context: Files & Folders](https://docs.antigma.ai/cookbook/providing-context)**
-
-![Adding file context with @ mentions](docs-site/static/assets/cookbook/files.gif)
-
-</td>
-<td width="50%">
-
-**[Interrupting & Steering](https://docs.antigma.ai/cookbook/steering)**
-
-![Interrupting the agent with Escape](docs-site/static/assets/cookbook/interrupt.gif)
-
-</td>
-</tr>
-<tr>
-<td width="50%">
-
-**[Models, Providers & Thinking](https://docs.antigma.ai/cookbook/models-and-thinking)**
-
-![Selecting a model and provider](docs-site/static/assets/cookbook/model.gif)
-
-</td>
-<td width="50%">
-
-**[Subscription Login](https://docs.antigma.ai/cookbook/login)**
-
-![Connecting to a provider via /connect](docs-site/static/assets/cookbook/connect.gif)
-
-</td>
-</tr>
-</table>
-
-[See all cookbook guides](https://docs.antigma.ai/cookbook/login)
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                         Clients                             │
-│                                                             │
-│   ┌───────────┐    ┌───────────┐    ┌────────────────────┐  │
-│   │    TUI    │    │ Headless  │    │    ante serve      │  │
-│   │  (ante)   │    │ (ante -p) │    │  (stdio / ws)      │  │
-│   └─────┬─────┘    └─────┬─────┘    └─────────┬──────────┘  │
-└─────────┼────────────────┼─────────────────────┼────────────┘
-          │     Op         │                     │
-          ▼                ▼                     ▼
-┌─────────────────────────────────────────────────────────────┐
-│                         Daemon                              │
-│                                                             │
-│   Session ──▶ Turn ──▶ Step                                │
-│                                                             │
-│   ┌──────────┐  ┌──────────────┐  ┌───────────────────┐     │
-│   │  Tools   │  │  Permission  │  │  Skills / Agents  │     │
-│   └──────────┘  └──────────────┘  └───────────────────┘     │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     LLM Providers                           │
-│                                                             │
-│   Anthropic · OpenAI · Gemini · Grok · Open Router · Local  │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## Supported Providers
-
-Ante works with 12+ providers out of the box:
-
-| Provider | Example Models |
-|----------|---------------|
-| Anthropic | Claude Sonnet 4.5, Opus 4.6 |
-| OpenAI | GPT-5 family |
-| Google Gemini | Gemini 3 family |
-| Grok (xAI) | Grok 4 |
-| Open Router | Multiple providers |
-| Local (GGUF) | Any GGUF model via built-in llama.cpp |
-| ...and more | Vertex AI, Zai, Antix, OpenAI-compatible |
-
-Configure providers via environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.) or OAuth. Add custom providers in `~/.ante/catalog.json`.
-
-## FAQ
-### Why <span style="color: #f59e0b;">An</span>other <span style="color: #f59e0b;">Te</span>rminal agent
-Ante is fast, lightweight, and the only terminal agent with native local inference support built in.
-We believe this self-contained agent core that self organize is the centre of the future of agent economy.
-
-It is just built different. 
-
-<details>
-<summary><b>How is Ante different than other agents</b></summary>
-On the high level, it has most of your favorite features (Multi-agents, skills, etc.) of your favorite agents (like Claude Code, Codex, etc.) 
-
-- Ante is built from scratch in native Rust, we are obsessed with being self contained, so only essential libraries without framework or runtime dependencies. 
-
-- You only need a llm provider configured to run it. Actually if you have the hardware, you don't even need a llm provider because Ante natively support private inference engine. 
-
-- This resulted in ~15MB self-contained binary and multi-agent orchestration designed to run hundreds of replicas in parallel at scale.
-See the [benchmark details](docs-site/docs/benchmarks/eval.mdx) across 20 parallel tasks for concrete numbers.
-
-- No vendor lock-ins, not even ourself. You don't need an account and can reuse your favorite api credentials. 
-
-</details>
-
-<details>
-<summary><b>Why care about runtime optimization like memory and I/O if model inference is usually the biggest bottleneck?</b></summary>
-
-For one-on-one agent interactions, runtime overhead like memory usage and I/O is often less important than model inference.
-
-But our vision is much bigger: millions of agents self-organizing and communicating at massive scale. At that point, even small inefficiencies get multiplied millions or billions of times, so runtime optimization becomes economically significant.
-</details>
-
-<details>
-<summary><b>Can I run Ante completely offline?</b></summary>
-
-Yes. Ante has a built-in llama.cpp engine that runs GGUF models locally. It handles engine installation, model discovery, and memory management automatically. No API keys or internet connection required.
-</details>
-
-<details>
-<summary><b>Can I use my own custom models or providers?</b></summary>
-
-Yes. Create a `~/.ante/catalog.json` file to add or override providers and models with custom endpoints, API keys, and configurations. Any OpenAI-compatible API works.
-</details>
-
-<details>
-<summary><b>What is the <code>ante serve</code> mode for?</b></summary>
-
-Server mode runs Ante as a long-lived daemon that communicates over a structured JSONL protocol. It's ideal for building editor plugins, web UIs, and custom integrations on top of Ante.
-</details>
-
-## Documentation
-
-Full documentation is available at [docs.antigma.ai](https://docs.antigma.ai).
-The source code is in `docs-site/docs`
+Forked from Anthropic's Claude Code. The extensibility layer, session system, memory server, model router, HITL, sub-agents, wiki-memory integration, and CLI restructuring are original additions.

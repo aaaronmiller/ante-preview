@@ -274,8 +274,11 @@ impl MemoryStore {
         self.entries.len()
     }
 
-    /// Persist to disk.
+    /// Persist to disk, creating parent directories as needed.
     fn save(&self) -> Result<(), MemoryError> {
+        if let Some(parent) = self.db_path.parent() {
+            fs::create_dir_all(parent).map_err(MemoryError::Write)?;
+        }
         let json = serde_json::to_string_pretty(&self.entries).map_err(MemoryError::Serde)?;
         fs::write(&self.db_path, &json).map_err(MemoryError::Write)?;
         Ok(())

@@ -216,6 +216,11 @@ impl StatusBar {
         self.model = model.to_string();
     }
 
+    /// Get the current model name (returns None if not yet set).
+    pub fn model(&self) -> Option<&str> {
+        if self.model.is_empty() { None } else { Some(&self.model) }
+    }
+
     pub fn set_max_context(&mut self, max: u64) {
         self.max_context = max;
     }

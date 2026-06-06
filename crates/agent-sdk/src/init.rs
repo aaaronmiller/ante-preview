@@ -59,7 +59,41 @@ pub fn first_run_setup(force: bool) -> Result<bool, InitError> {
     create_dir_if_missing(&ante_dir.join("hooks"))?;
     create_dir_if_missing(&ante_dir.join("agents"))?;
     create_dir_if_missing(&ante_dir.join("run"))?;
-    create_dir_if_missing(&ante_dir.join("memory"))?;
+
+    // ── Shared memory directory (wiki-memory compatible) ───────────────
+    // All agents share the same ~/ai-wiki directory.  If the wiki-memory
+    // project is present at ~/code/wiki-memory, symlink ~/ai-wiki → its
+    // wiki/ directory so the dream agent and hooks are immediately
+    // available.  Otherwise create a plain directory that still works.
+    let ai_wiki = default_ai_wiki_dir();
+    if !ai_wiki.exists() {
+        // Try to symlink to wiki-memory repo if present
+        let wiki_memory_path = default_ante_dir() // ~ -> ~/code/wiki-memory/wiki
+            .parent()  // ~
+            .map(|p| p.join("code").join("wiki-memory").join("wiki"));
+        let symlinked = if let Some(ref src) = wiki_memory_path {
+            if src.exists() {
+                #[cfg(unix)]
+                {
+                    std::os::unix::fs::symlink(src, &ai_wiki).is_ok()
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = src;
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if !symlinked {
+            create_dir_if_missing(&ai_wiki)?;
+        }
+    }
+    // Ensure .meta subdirectory exists inside the wiki
+    create_dir_if_missing(&ai_wiki.join(".meta"))?;
 
     // Write blocklist hook script
     let hook_path = ante_dir.join("hooks").join("block-danger.sh");
@@ -212,6 +246,19 @@ fn default_ante_dir() -> PathBuf {
     PathBuf::from(".ante")
 }
 
+/// Returns the shared memory / wiki directory (`~/ai-wiki`).
+///
+/// This is the canonical location for all agent memory data.  It may be a
+/// symlink to `wiki-memory/wiki/` when the wiki-memory project is
+/// installed, or a plain directory otherwise.
+fn default_ai_wiki_dir() -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join("ai-wiki")
+    } else {
+        PathBuf::from("./ai-wiki")
+    }
+}
+
 fn create_dir_if_missing(path: &PathBuf) -> Result<(), InitError> {
     if !path.exists() {
         fs::create_dir_all(path).map_err(|source| InitError::CreateDir {
@@ -250,7 +297,11 @@ mod tests {
         assert!(ante_dir.join("hooks").join("session_end.py").exists());
         assert!(ante_dir.join("agents").exists());
         assert!(ante_dir.join("run").exists());
-        assert!(ante_dir.join("memory").exists());
+
+        // Shared memory directory (~/ai-wiki) should be created
+        let ai_wiki = tmp.path().join("ai-wiki");
+        assert!(ai_wiki.exists());
+        assert!(ai_wiki.join(".meta").exists());
 
         // Second run with no force should detect existing setup
         let result2 = first_run_setup(false);
