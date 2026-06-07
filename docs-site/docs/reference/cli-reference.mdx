@@ -117,11 +117,12 @@ The update command checks for a newer Ante release and installs it when one is a
 
 | Argument | Description |
 |---|---|
-| `[CHANNEL]` | Release channel to update from (`stable` or `nightly`). Conflicts with `--channel`. |
+| `[CHANNEL]` | Release channel to update from (`stable` or `nightly`). `latest` is accepted as a legacy alias for `stable`. Conflicts with `--channel` and `--version`. |
 
 | Flag | Description |
 |---|---|
 | `--channel <CHANNEL>` | Release channel to update from. Equivalent to the positional form. |
+| `--version <VERSION>` | Install an exact release instead of the channel's newest release. Accepts values with or without a leading `v`, such as `v0.preview.33` or `0.preview.33`. Conflicts with channel arguments. |
 | `-h`, `--help` | Print command help. |
 
 ### Examples
@@ -130,6 +131,7 @@ The update command checks for a newer Ante release and installs it when one is a
 ante update
 ante update nightly
 ante update --channel stable
+ante update --version v0.preview.33
 ```
 
 ## `ante rage`

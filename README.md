@@ -62,6 +62,9 @@ curl -fsSL https://ante.run/install.sh | bash
 
 # Install a specific release channel
 curl -fsSL https://ante.run/install.sh | bash -s -- nightly
+
+# Install into a directory already on PATH
+curl -fsSL https://ante.run/install.sh | ANTE_INSTALL_DIR=/usr/local/bin bash
 ```
 
 ### Interactive TUI
@@ -109,6 +112,9 @@ ante update
 
 # One-off update from a different channel
 ante update --channel nightly
+
+# Roll back or pin to an exact release
+ante update --version v0.preview.33
 ```
 
 ## Example Usages with TUI

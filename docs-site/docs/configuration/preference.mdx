@@ -41,7 +41,7 @@ Ante stores user preferences in `~/.ante/settings.json`:
 | `policy` | Default permission policy (`default` or `yolo`) |
 | `permissions` | Persistent tool permission rules, grouped by `allow`, `ask`, and `deny` matchers (see [Permissions](/configuration/permission)) |
 | `has_completed_onboarding` | Whether the onboarding flow has been completed |
-| `channel` | Release channel `ante update` tracks (`stable` or `nightly`). Defaults to `stable`. See [Update & Channels](/start/update). |
+| `channel` | Release channel `ante update` tracks (`stable` or `nightly`). Defaults to `stable`; legacy `latest` values are treated as `stable`. See [Update & Channels](/start/update). |
 | `status_line` | Items to display in the TUI status line footer (see below) |
 | `model_thinking` | Per-model thinking level overrides — keys are model names, values are `Disabled` / `Enabled` / `Deep` / `Max` |
 | `mcp_servers` | MCP servers to launch on session start (see [MCP Servers](/extend/mcp)) |
@@ -88,6 +88,7 @@ Settings can be overridden per-session via CLI flags.
 | `MODEL_CONTEXT_LIMIT` | Override max context window size (integer) |
 | `ANTE_LOCAL_PROVIDER_PORT` | Override the local provider port (default: 8080) |
 | `ANTE_HOME` | Override the home config directory (default: `~/.ante`) |
+| `ANTE_INSTALL_DIR` | Installer-only override for the binary install directory (default: `~/.ante/bin`) |
 | `ANTE_DISABLE_STREAMING` | Disable streaming responses in TUI mode |
 | `ANTE_OPENAI_TRANSPORT` | OpenAI Responses transport: `http_sse` (default) or `websocket_auto` (see [OpenAI transports](/reference/catalog-reference#openai-transports)) |
 

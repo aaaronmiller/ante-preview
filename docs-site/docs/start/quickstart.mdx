@@ -15,6 +15,12 @@ Ante is distributed as a single, self-contained binary with no external dependen
 curl -fsSL https://ante.run/install.sh | bash
 ```
 
+By default this installs to `~/.ante/bin`. To install somewhere else, set `ANTE_INSTALL_DIR`:
+
+```sh
+curl -fsSL https://ante.run/install.sh | ANTE_INSTALL_DIR=/usr/local/bin bash
+```
+
 ## Quick examples
 
 ### Interactive session
@@ -67,6 +73,9 @@ ante update
 
 # Try the development channel for one update
 ante update nightly
+
+# Roll back or pin to an exact release
+ante update --version v0.preview.33
 ```
 
 ## What's next?
