@@ -11,40 +11,41 @@
 //!   ante agents <cmd>    — Sub-agent management
 //!   ante diagram <file>  — Render Mermaid file to ASCII
 
-mod status;
 mod mcp_server;
+mod status;
 
+use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::Instant;
 
-use status::{render_banner, StatusBar};
+use status::{StatusBar, render_banner};
 
+use agent_sdk::agents::loader::AgentRegistry;
 use agent_sdk::budget::{BudgetConfig, BudgetTracker};
 use agent_sdk::claude::{
-    Claude, ClaudeMessage, ClaudeOptions, ContentBlock, ControlRequestMessage,
-    ControlResponseMessage, ResultMessage, UserMessage, AssistantMessage,
-    SystemMessage, StreamEventMessage,
+    AssistantMessage, Claude, ClaudeMessage, ClaudeOptions, ContentBlock, ControlRequestMessage,
+    ControlResponseMessage, ResultMessage, StreamEventMessage, SystemMessage, UserMessage,
 };
 use agent_sdk::event::EventBus;
-use agent_sdk::hitl::{ApprovalManager, ApprovalDecision, HitlMode, RiskLevel};
+use agent_sdk::hitl::{ApprovalDecision, ApprovalManager, HitlMode, RiskLevel};
 use agent_sdk::hooks::registry::HookRegistry;
 use agent_sdk::init::first_run_setup;
 use agent_sdk::mcp::registry::{McpServerConfigEntry, McpToolRegistry};
-use agent_sdk::memory::store::MemoryStore;
 use agent_sdk::memory::server::MemoryServer;
+use agent_sdk::memory::store::MemoryStore;
 use agent_sdk::router::ModelRouter;
 use agent_sdk::sessions::SessionManager;
 use agent_sdk::settings::load_settings;
 use agent_sdk::ui::diagram::render;
 use agent_sdk::ui::todo::TodoList;
-use agent_sdk::agents::loader::AgentRegistry;
+use ante_protocol_shape::payload::RiskLevel as ProtocolRiskLevel;
 use ante_protocol_shape::settings::Settings;
 use ante_protocol_shape::{
-    BasePayload, EventPayload, Id,
-    SessionStartPayload, SessionEndPayload,
-    CompactPayload, UserPromptPayload, PermissionRequestPayload,
+    BasePayload, CompactPayload, EventPayload, Id, PermissionRequestPayload, SessionEndPayload,
+    SessionStartPayload, UserPromptPayload,
 };
-use ante_protocol_shape::payload::RiskLevel as ProtocolRiskLevel;
 use clap::{Parser, Subcommand};
 
 // ─── CLI ────────────────────────────────────────────────────────────────────
@@ -159,6 +160,9 @@ enum Commands {
         command: SessionCommands,
     },
 
+    /// Check local production-readiness prerequisites
+    Doctor,
+
     /// Render Mermaid diagram to ASCII
     Diagram {
         /// Path to Mermaid file or inline source
@@ -233,9 +237,48 @@ enum TodoCommands {
 #[derive(Subcommand)]
 enum AgentsCommands {
     /// List available sub-agents
-    List,
-    /// Decompose and run a task through sub-agents
-    Run { task: Vec<String> },
+    List {
+        /// Override the agent directory
+        #[arg(long)]
+        agent_dir: Option<PathBuf>,
+    },
+    /// Match a task to the best available sub-agent without executing it
+    Match {
+        /// Override the agent directory
+        #[arg(long)]
+        agent_dir: Option<PathBuf>,
+        /// Task text
+        task: Vec<String>,
+    },
+    /// Run a task through the best matching sub-agent
+    Run {
+        /// Backend runner to use: opencode or dry-run
+        #[arg(long, default_value = "opencode")]
+        backend: String,
+        /// Override the model. OpenCode format is provider/model.
+        #[arg(long)]
+        model: Option<String>,
+        /// Override the agent directory
+        #[arg(long)]
+        agent_dir: Option<PathBuf>,
+        /// Directory where the backend should run
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Write execution transcript and metadata to this file
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Show selected agent and rendered prompt without executing
+        #[arg(long)]
+        dry_run: bool,
+        /// Add read-only instructions to the sub-agent prompt
+        #[arg(long)]
+        read_only: bool,
+        /// Pass OpenCode's dangerously-skip-permissions flag
+        #[arg(long)]
+        skip_permissions: bool,
+        /// Task text
+        task: Vec<String>,
+    },
 }
 
 // ─── Local Budget Tracking ──────────────────────────────────────────────────
@@ -273,14 +316,11 @@ struct AgentContext {
 impl AgentContext {
     /// Initialize all components from settings.
     fn initialize(settings: Settings) -> Self {
-        let ante_dir = settings
-            .ante_dir
-            .clone()
-            .unwrap_or_else(|| {
-                std::env::var("HOME")
-                    .map(|h| PathBuf::from(h).join(".ante"))
-                    .unwrap_or_else(|_| PathBuf::from(".ante"))
-            });
+        let ante_dir = settings.ante_dir.clone().unwrap_or_else(|| {
+            std::env::var("HOME")
+                .map(|h| PathBuf::from(h).join(".ante"))
+                .unwrap_or_else(|_| PathBuf::from(".ante"))
+        });
 
         // ── Event bus + hooks ────────────────────────────────────────────
         let hook_registry = HookRegistry::new(settings.hooks.rules.clone());
@@ -302,19 +342,16 @@ impl AgentContext {
         };
 
         // ── Memory store ─────────────────────────────────────────────────
-        let memory = MemoryStore::open(
-            settings.memory.db_path.clone(),
-            settings.memory.max_context_memories,
-        )
-        .ok();
+        let memory_db_path = expand_tilde_path(settings.memory.db_path.clone());
+        let memory =
+            MemoryStore::open(memory_db_path.clone(), settings.memory.max_context_memories).ok();
 
-        let memory_server = memory.as_ref().map(|_| {
-            MemoryServer::open(
-                settings.memory.db_path.clone(),
-                settings.memory.max_context_memories,
-            )
-        })
-        .and_then(|r| r.ok());
+        let memory_server = memory
+            .as_ref()
+            .map(|_| {
+                MemoryServer::open(memory_db_path.clone(), settings.memory.max_context_memories)
+            })
+            .and_then(|r| r.ok());
 
         // ── Todo list ────────────────────────────────────────────────────
         let todo = TodoList::open(ante_dir.join("todo.json")).ok();
@@ -373,7 +410,8 @@ impl AgentContext {
         // ── Internal Ante tools server (diagram + todo) ──────────────────
         let internal_entry = McpServerConfigEntry {
             name: "ante-tools".to_string(),
-            command: std::env::current_exe().ok()
+            command: std::env::current_exe()
+                .ok()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| "ante".to_string()),
             args: vec!["internal-mcp-server".to_string()],
@@ -417,22 +455,27 @@ impl AgentContext {
     /// Print the startup banner to stderr with feature stats.
     fn show_banner(&self) {
         let model = None; // Will be updated after Claude connects
-        let memory_count = self.memory.as_ref()
+        let memory_count = self
+            .memory
+            .as_ref()
             .map(|m| m.search("").len())
             .unwrap_or(0);
-        let agent_count = match agent_sdk::agents::loader::AgentRegistry::load(
-            &self.ante_dir.join("agents")
-        ) {
+        let agent_count = match agent_sdk::agents::loader::AgentRegistry::load(&expand_tilde_path(
+            self.settings.agents.directory.clone(),
+        )) {
             Ok(reg) => reg.count(),
             Err(_) => 0,
         };
-        eprint!("{}", render_banner(
-            env!("CARGO_PKG_VERSION"),
-            model,
-            self.settings.mcp_servers.len(),
-            agent_count,
-            memory_count,
-        ));
+        eprint!(
+            "{}",
+            render_banner(
+                env!("CARGO_PKG_VERSION"),
+                model,
+                self.settings.mcp_servers.len(),
+                agent_count,
+                memory_count,
+            )
+        );
     }
 
     /// Render and print the current status bar to stderr.
@@ -467,11 +510,20 @@ impl AgentContext {
     fn auto_store_memory(&mut self, content: String, project: &str) {
         if let Some(store) = self.memory.as_mut() {
             // Auto-tag based on content keywords
-            let tags = if content.contains("config") || content.contains("port") || content.contains("env") {
+            let tags = if content.contains("config")
+                || content.contains("port")
+                || content.contains("env")
+            {
                 "config"
-            } else if content.contains("api") || content.contains("token") || content.contains("key") {
+            } else if content.contains("api")
+                || content.contains("token")
+                || content.contains("key")
+            {
                 "api"
-            } else if content.contains("bug") || content.contains("fix") || content.contains("issue") {
+            } else if content.contains("bug")
+                || content.contains("fix")
+                || content.contains("issue")
+            {
                 "bug"
             } else {
                 "general"
@@ -483,11 +535,7 @@ impl AgentContext {
     }
 
     /// Classify a tool and check HITL approval.
-    async fn check_hitl(
-        &self,
-        tool_name: &str,
-        input: &serde_json::Value,
-    ) -> Result<(), String> {
+    async fn check_hitl(&self, tool_name: &str, input: &serde_json::Value) -> Result<(), String> {
         let Some(ref approval) = self.approval else {
             return Ok(());
         };
@@ -505,9 +553,7 @@ impl AgentContext {
             return Ok(());
         }
 
-        eprintln!(
-            "\n⚠️  Tool requires approval: {tool_name} ({risk:?} risk)"
-        );
+        eprintln!("\n⚠️  Tool requires approval: {tool_name} ({risk:?} risk)");
         eprintln!("  Input: {input}");
 
         // Prompt user
@@ -616,12 +662,15 @@ async fn run_repl_with_options(
 
     // Fire session start event
     if let Some(ref bus) = ctx.event_bus {
-        let _ = bus.emit(&EventPayload::SessionStart(session_start_payload(&bp))).await;
+        let _ = bus
+            .emit(&EventPayload::SessionStart(session_start_payload(&bp)))
+            .await;
     }
 
     eprintln!("Connecting to Claude CLI...");
     let mut client = Claude::connect(cli_options).await?;
-    let model_name = client.server_info()
+    let model_name = client
+        .server_info()
         .and_then(|info| info.get("model"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
@@ -641,36 +690,39 @@ async fn run_repl_with_options(
         if let Some(ref sessions) = ctx.sessions {
             match sessions.read_session(sid) {
                 Ok(Some(lines)) => {
-                    let messages: Vec<String> = lines.iter().filter_map(|line| {
-                        use agent_sdk::sessions::SessionLine;
-                        match line {
-                            SessionLine::Message(msg) => {
-                                let role = &msg.message.role;
-                                let content_str = match &msg.message.content {
-                                    serde_json::Value::String(s) => s.clone(),
-                                    serde_json::Value::Array(arr) => {
-                                        arr.iter()
-                                            .filter_map(|b| b.get("text")
-                                                .and_then(|t| t.as_str()))
+                    let messages: Vec<String> = lines
+                        .iter()
+                        .filter_map(|line| {
+                            use agent_sdk::sessions::SessionLine;
+                            match line {
+                                SessionLine::Message(msg) => {
+                                    let role = &msg.message.role;
+                                    let content_str = match &msg.message.content {
+                                        serde_json::Value::String(s) => s.clone(),
+                                        serde_json::Value::Array(arr) => arr
+                                            .iter()
+                                            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
                                             .collect::<Vec<_>>()
-                                            .join("\n")
+                                            .join("\n"),
+                                        _ => String::new(),
+                                    };
+                                    if content_str.trim().is_empty() {
+                                        None
+                                    } else {
+                                        Some(format!("[{role}] {content_str}"))
                                     }
-                                    _ => String::new(),
-                                };
-                                if content_str.trim().is_empty() {
-                                    None
-                                } else {
-                                    Some(format!("[{role}] {content_str}"))
                                 }
+                                _ => None,
                             }
-                            _ => None,
-                        }
-                    }).collect();
+                        })
+                        .collect();
 
                     if !messages.is_empty() {
                         eprintln!("[ante] Resumed session {sid}");
                         let ctx_str = messages.join("\n");
-                        Some(format!("\n[Previous session {sid} context]\n{ctx_str}\n[/Previous session context]\n"))
+                        Some(format!(
+                            "\n[Previous session {sid} context]\n{ctx_str}\n[/Previous session context]\n"
+                        ))
                     } else {
                         None
                     }
@@ -730,9 +782,7 @@ async fn run_repl_with_options(
 
         // Check for commands
         if input.starts_with('/') {
-            let should_quit = handle_command(
-                input, &mut client, ctx, &bp,
-            ).await?;
+            let should_quit = handle_command(input, &mut client, ctx, &bp).await?;
             if should_quit {
                 break;
             }
@@ -741,9 +791,7 @@ async fn run_repl_with_options(
 
         // Fire PreUserPromptSubmit event
         if let Some(ref bus) = ctx.event_bus {
-            let payload = EventPayload::PreUserPromptSubmit(
-                user_prompt_payload(&bp, input)
-            );
+            let payload = EventPayload::PreUserPromptSubmit(user_prompt_payload(&bp, input));
             let result = bus.emit(&payload).await;
             if !result.decision.is_allowed() {
                 eprintln!("[ante] Prompt blocked by hook: {:?}", result.hooks_executed);
@@ -787,9 +835,7 @@ async fn run_repl_with_options(
 
         // Fire PostUserPromptSubmit event
         if let Some(ref bus) = ctx.event_bus {
-            let payload = EventPayload::PostUserPromptSubmit(
-                user_prompt_payload(&bp, input)
-            );
+            let payload = EventPayload::PostUserPromptSubmit(user_prompt_payload(&bp, input));
             let _ = bus.emit(&payload).await;
         }
     }
@@ -802,7 +848,9 @@ async fn run_repl_with_options(
 
     // Fire session end event
     if let Some(ref bus) = ctx.event_bus {
-        let _ = bus.emit(&EventPayload::SessionEnd(session_end_payload(&bp))).await;
+        let _ = bus
+            .emit(&EventPayload::SessionEnd(session_end_payload(&bp)))
+            .await;
     }
 
     // Disconnect MCP servers
@@ -837,12 +885,14 @@ async fn stream_response(
                 render_assistant(assistant);
 
                 // Record assistant response in session log
-                let text_parts: Vec<&str> = assistant.content.iter().filter_map(|block| {
-                    match block {
+                let text_parts: Vec<&str> = assistant
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
                         ContentBlock::Text(t) => Some(t.text.as_str()),
                         _ => None,
-                    }
-                }).collect();
+                    })
+                    .collect();
                 if !text_parts.is_empty() {
                     let content = serde_json::json!(text_parts);
                     if let Some(ref sessions) = ctx.sessions {
@@ -871,7 +921,8 @@ async fn stream_response(
                     if let Some(input_tokens) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
                         ctx.budget_snapshot.input_tokens += input_tokens;
                     }
-                    if let Some(output_tokens) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
+                    if let Some(output_tokens) = usage.get("output_tokens").and_then(|v| v.as_u64())
+                    {
                         ctx.budget_snapshot.output_tokens += output_tokens;
                     }
                 }
@@ -926,8 +977,12 @@ async fn stream_response(
                 if let Some(ref result_val) = result.result {
                     if let Some(result_text) = result_val.as_str() {
                         if !result_text.trim().is_empty() {
-                            let usage = result.usage.clone().map(|u| serde_json::to_value(u).unwrap_or_default());
-                            let content = serde_json::json!([{"type": "text", "text": result_text}]);
+                            let usage = result
+                                .usage
+                                .clone()
+                                .map(|u| serde_json::to_value(u).unwrap_or_default());
+                            let content =
+                                serde_json::json!([{"type": "text", "text": result_text}]);
                             if let Some(ref sessions) = ctx.sessions {
                                 // Use model name from status bar (set at connect time)
                                 let model = ctx.status_bar.model();
@@ -940,8 +995,14 @@ async fn stream_response(
                 // Update session token tracking
                 if let Some(ref sessions) = ctx.sessions {
                     if let Some(usage) = &result.usage {
-                        let total = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0)
-                            + usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let total = usage
+                            .get("input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0)
+                            + usage
+                                .get("output_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
                         sessions.add_tokens(total);
                     }
                 }
@@ -972,22 +1033,23 @@ async fn handle_control_request(
             // Fire PermissionRequest event
             if let Some(ref bus) = ctx.event_bus {
                 if let Some(name) = &tool_name {
-                    let payload = EventPayload::PermissionRequest(
-                        PermissionRequestPayload {
-                            base: bp.clone(),
-                            tool_name: name.clone(),
-                            input: tool_input.clone().unwrap_or(serde_json::Value::Null),
-                            risk_level: ProtocolRiskLevel::Medium,
-                            message: format!("Tool '{}' requires permission", name),
-                            can_modify: true,
-                        }
-                    );
+                    let payload = EventPayload::PermissionRequest(PermissionRequestPayload {
+                        base: bp.clone(),
+                        tool_name: name.clone(),
+                        input: tool_input.clone().unwrap_or(serde_json::Value::Null),
+                        risk_level: ProtocolRiskLevel::Medium,
+                        message: format!("Tool '{}' requires permission", name),
+                        can_modify: true,
+                    });
                     let result = bus.emit(&payload).await;
                     if !result.decision.is_allowed() {
                         ctx.status_bar.track_tool_blocked();
                         ctx.status_bar.track_hook_blocked();
                         client
-                            .respond_control_request_error(request_id, &format!("Blocked by hook: {:?}", result.hooks_executed))
+                            .respond_control_request_error(
+                                request_id,
+                                &format!("Blocked by hook: {:?}", result.hooks_executed),
+                            )
                             .await?;
                         return Ok(());
                     }
@@ -1000,7 +1062,10 @@ async fn handle_control_request(
                     ctx.status_bar.track_tool_blocked();
                     ctx.status_bar.track_hitl_denied();
                     client
-                        .respond_control_request_error(request_id, &format!("Denied by HITL: {reason}"))
+                        .respond_control_request_error(
+                            request_id,
+                            &format!("Denied by HITL: {reason}"),
+                        )
                         .await?;
                     return Ok(());
                 }
@@ -1023,7 +1088,10 @@ async fn handle_control_request(
         Some(other) => {
             // Unknown control request — reject with error
             client
-                .respond_control_request_error(request_id, &format!("unsupported control request type: {other}"))
+                .respond_control_request_error(
+                    request_id,
+                    &format!("unsupported control request type: {other}"),
+                )
                 .await?;
         }
     }
@@ -1032,7 +1100,9 @@ async fn handle_control_request(
 }
 
 /// Extract tool name and input from a control request payload.
-fn extract_tool_request(request: &Option<serde_json::Value>) -> (Option<String>, Option<serde_json::Value>) {
+fn extract_tool_request(
+    request: &Option<serde_json::Value>,
+) -> (Option<String>, Option<serde_json::Value>) {
     let req = match request {
         Some(r) => r,
         None => return (None, None),
@@ -1114,7 +1184,10 @@ async fn handle_command(
                     eprintln!("Memories matching '{arg}':");
                     for entry in results {
                         let ts = &entry.timestamp[..8.min(entry.timestamp.len())];
-                        eprintln!("  [{ts}] [{}] {} (project: {})", entry.tags, entry.content, entry.project);
+                        eprintln!(
+                            "  [{ts}] [{}] {} (project: {})",
+                            entry.tags, entry.content, entry.project
+                        );
                     }
                 }
             } else {
@@ -1247,8 +1320,8 @@ fn render_assistant(message: &AssistantMessage) {
             }
             ContentBlock::Other(value) => {
                 println!("  [other block]");
-                let pretty = serde_json::to_string_pretty(value)
-                    .unwrap_or_else(|_| value.to_string());
+                let pretty =
+                    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
                 for line in pretty.lines() {
                     println!("  {line}");
                 }
@@ -1268,8 +1341,8 @@ fn render_user(message: &UserMessage) {
             println!("  {line}");
         }
     } else {
-        let pretty = serde_json::to_string_pretty(&message.raw)
-            .unwrap_or_else(|_| message.raw.to_string());
+        let pretty =
+            serde_json::to_string_pretty(&message.raw).unwrap_or_else(|_| message.raw.to_string());
         for line in pretty.lines() {
             println!("  {line}");
         }
@@ -1278,8 +1351,8 @@ fn render_user(message: &UserMessage) {
 
 fn render_system(message: &SystemMessage) {
     print_header("system", message.subtype.as_deref());
-    let pretty = serde_json::to_string_pretty(&message.raw)
-        .unwrap_or_else(|_| message.raw.to_string());
+    let pretty =
+        serde_json::to_string_pretty(&message.raw).unwrap_or_else(|_| message.raw.to_string());
     for line in pretty.lines() {
         println!("  {line}");
     }
@@ -1288,8 +1361,7 @@ fn render_system(message: &SystemMessage) {
 fn render_stream_event(message: &StreamEventMessage) {
     print_header("stream_event", None);
     if let Some(event) = &message.event {
-        let pretty = serde_json::to_string_pretty(event)
-            .unwrap_or_else(|_| event.to_string());
+        let pretty = serde_json::to_string_pretty(event).unwrap_or_else(|_| event.to_string());
         for line in pretty.lines() {
             println!("  {line}");
         }
@@ -1302,8 +1374,8 @@ fn render_control_response(message: &ControlResponseMessage) {
         println!("  error: {error}");
     }
     if let Some(response) = &message.response {
-        let pretty = serde_json::to_string_pretty(response)
-            .unwrap_or_else(|_| response.to_string());
+        let pretty =
+            serde_json::to_string_pretty(response).unwrap_or_else(|_| response.to_string());
         for line in pretty.lines() {
             println!("  {line}");
         }
@@ -1324,8 +1396,7 @@ fn render_result(message: &ResultMessage) {
     }
     if let Some(usage) = &message.usage {
         println!("  usage:");
-        let pretty = serde_json::to_string_pretty(usage)
-            .unwrap_or_else(|_| usage.to_string());
+        let pretty = serde_json::to_string_pretty(usage).unwrap_or_else(|_| usage.to_string());
         for line in pretty.lines() {
             println!("  {line}");
         }
@@ -1340,8 +1411,8 @@ fn render_result(message: &ResultMessage) {
             }
             other => {
                 println!("  result:");
-                let pretty = serde_json::to_string_pretty(other)
-                    .unwrap_or_else(|_| other.to_string());
+                let pretty =
+                    serde_json::to_string_pretty(other).unwrap_or_else(|_| other.to_string());
                 for line in pretty.lines() {
                     println!("  {line}");
                 }
@@ -1367,9 +1438,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Default (no subcommand) = interactive REPL with always-on recording & recovery
     let subcommand = cli.command.unwrap_or(Commands::Repl);
     match subcommand {
-        Commands::Init { force } => {
-            handle_init(force)?
-        }
+        Commands::Init { force } => handle_init(force)?,
         Commands::Query {
             prompt,
             model,
@@ -1379,7 +1448,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             risk_threshold,
             no_router,
         } => {
-            handle_query(prompt, model, no_memory, no_hitl, hitl_mode, risk_threshold, no_router).await?;
+            handle_query(
+                prompt,
+                model,
+                no_memory,
+                no_hitl,
+                hitl_mode,
+                risk_threshold,
+                no_router,
+            )
+            .await?;
         }
         Commands::Repl => {
             handle_repl(
@@ -1392,10 +1470,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cli.cli_path,
                 cli.continue_session,
                 cli.resume,
-            ).await?;
+            )
+            .await?;
         }
         Commands::Sessions { command } => {
             handle_sessions(command)?;
+        }
+        Commands::Doctor => {
+            handle_doctor()?;
         }
         Commands::Memory { command } => {
             handle_memory_direct(command)?;
@@ -1469,11 +1551,13 @@ async fn handle_query(
     // Update status bar with MCP count, memory entries, and todos
     if let Some(ref reg) = ctx.mcp_registry {
         let tools: Vec<_> = reg.list_tools();
-        let connected_count = tools.iter().map(|t| &t.server).collect::<std::collections::HashSet<_>>().len();
-        ctx.status_bar.set_mcp_servers(
-            ctx.settings.mcp_servers.len(),
-            connected_count,
-        );
+        let connected_count = tools
+            .iter()
+            .map(|t| &t.server)
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        ctx.status_bar
+            .set_mcp_servers(ctx.settings.mcp_servers.len(), connected_count);
     }
     if let Some(ref mem) = ctx.memory {
         ctx.status_bar.set_memory_entries(mem.search("").len());
@@ -1493,7 +1577,10 @@ async fn handle_query(
         if let Some(ref router) = ctx.router {
             match router.select(&prompt_text, 0) {
                 Ok(decision) => {
-                    eprintln!("[ante] Model router: {} ({})", decision.selected_model, decision.reason);
+                    eprintln!(
+                        "[ante] Model router: {} ({})",
+                        decision.selected_model, decision.reason
+                    );
                     Some(decision.selected_model)
                 }
                 Err(_) => model.clone(),
@@ -1552,14 +1639,14 @@ async fn handle_query(
 
     // Fire SessionStart event
     if let Some(ref bus) = ctx.event_bus {
-        let _ = bus.emit(&EventPayload::SessionStart(session_start_payload(&bp))).await;
+        let _ = bus
+            .emit(&EventPayload::SessionStart(session_start_payload(&bp)))
+            .await;
     }
 
     // Fire PreUserPromptSubmit event
     let prompt_allowed = if let Some(ref bus) = ctx.event_bus {
-        let payload = EventPayload::PreUserPromptSubmit(
-            user_prompt_payload(&bp, &prompt_text)
-        );
+        let payload = EventPayload::PreUserPromptSubmit(user_prompt_payload(&bp, &prompt_text));
         let result = bus.emit(&payload).await;
         if !result.decision.is_allowed() {
             eprintln!("[ante] Prompt blocked by hook: {:?}", result.hooks_executed);
@@ -1579,7 +1666,8 @@ async fn handle_query(
     // ── Start session logging ────────────────────────────────────────────
     let cwd = std::env::current_dir().unwrap_or_default();
     if let Some(ref sessions) = ctx.sessions {
-        let model_name = client.server_info()
+        let model_name = client
+            .server_info()
             .and_then(|info| info.get("model"))
             .and_then(|v| v.as_str())
             .unwrap_or("claude");
@@ -1592,9 +1680,12 @@ async fn handle_query(
 
     // Fire PostUserPromptSubmit event
     if let Some(ref bus) = ctx.event_bus {
-        let _ = bus.emit(&EventPayload::PostUserPromptSubmit(
-            user_prompt_payload(&bp, &prompt_text)
-        )).await;
+        let _ = bus
+            .emit(&EventPayload::PostUserPromptSubmit(user_prompt_payload(
+                &bp,
+                &prompt_text,
+            )))
+            .await;
     }
 
     // Stream response, handling control requests etc.
@@ -1608,7 +1699,9 @@ async fn handle_query(
 
     // Fire SessionEnd event
     if let Some(ref bus) = ctx.event_bus {
-        let _ = bus.emit(&EventPayload::SessionEnd(session_end_payload(&bp))).await;
+        let _ = bus
+            .emit(&EventPayload::SessionEnd(session_end_payload(&bp)))
+            .await;
     }
 
     client.shutdown().await?;
@@ -1659,11 +1752,13 @@ async fn handle_repl(
     // Update status bar with MCP count, memory entries, and todos
     if let Some(ref reg) = ctx.mcp_registry {
         let tools: Vec<_> = reg.list_tools();
-        let connected_count = tools.iter().map(|t| &t.server).collect::<std::collections::HashSet<_>>().len();
-        ctx.status_bar.set_mcp_servers(
-            ctx.settings.mcp_servers.len(),
-            connected_count,
-        );
+        let connected_count = tools
+            .iter()
+            .map(|t| &t.server)
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        ctx.status_bar
+            .set_mcp_servers(ctx.settings.mcp_servers.len(), connected_count);
     }
     if let Some(ref mem) = ctx.memory {
         ctx.status_bar.set_memory_entries(mem.search("").len());
@@ -1724,15 +1819,12 @@ fn handle_memory_direct(command: MemoryCommands) -> Result<(), Box<dyn std::erro
     let settings = load_settings().ok();
     let mem_path = settings
         .as_ref()
-        .map(|s| s.memory.db_path.clone())
+        .map(|s| expand_tilde_path(s.memory.db_path.clone()))
         .unwrap_or_else(|| {
-            PathBuf::from(
-                std::env::var("HOME")
-                    .unwrap_or_else(|_| ".".into()),
-            )
-            .join("ai-wiki")
-            .join(".meta")
-            .join("ante-memory.db")
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+                .join("ai-wiki")
+                .join(".meta")
+                .join("ante-memory.db")
         });
 
     let max_memories = settings
@@ -1743,8 +1835,13 @@ fn handle_memory_direct(command: MemoryCommands) -> Result<(), Box<dyn std::erro
         .map_err(|e| format!("Failed to open memory store: {e}"))?;
 
     match command {
-        MemoryCommands::Add { content, tags, project } => {
-            let entry = store.add(content, tags, project)
+        MemoryCommands::Add {
+            content,
+            tags,
+            project,
+        } => {
+            let entry = store
+                .add(content, tags, project)
                 .map_err(|e| format!("Failed to add memory: {e}"))?;
             println!("Added memory: {} ({})", entry.id, entry.content);
         }
@@ -1755,7 +1852,10 @@ fn handle_memory_direct(command: MemoryCommands) -> Result<(), Box<dyn std::erro
             } else {
                 for entry in results {
                     let ts = &entry.timestamp[..8.min(entry.timestamp.len())];
-                    println!("[{ts}] [{}] {} (project: {})", entry.tags, entry.content, entry.project);
+                    println!(
+                        "[{ts}] [{}] {} (project: {})",
+                        entry.tags, entry.content, entry.project
+                    );
                 }
             }
         }
@@ -1803,7 +1903,10 @@ fn handle_sessions(command: SessionCommands) -> Result<(), Box<dyn std::error::E
                 };
                 let model = s.model_id.as_deref().unwrap_or("?");
                 let msgs = s.message_count;
-                println!("  {:<38}  {:25}  {:12}  {} msgs  {}", s.session_id, s.project, model, msgs, dur);
+                println!(
+                    "  {:<38}  {:25}  {:12}  {} msgs  {}",
+                    s.session_id, s.project, model, msgs, dur
+                );
             }
             println!();
             println!("{} session(s) found.", sessions.len());
@@ -1820,8 +1923,9 @@ fn handle_sessions(command: SessionCommands) -> Result<(), Box<dyn std::error::E
                     let mut cwd = "?".to_string();
                     let mut started = "?".to_string();
 
-                    let msg_lines: Vec<String> = lines.iter().filter_map(|line| {
-                        match line {
+                    let msg_lines: Vec<String> = lines
+                        .iter()
+                        .filter_map(|line| match line {
                             agent_sdk::sessions::SessionLine::Session(h) => {
                                 provider = h.provider.clone().unwrap_or_default();
                                 model = h.model_id.clone().unwrap_or_default();
@@ -1833,16 +1937,15 @@ fn handle_sessions(command: SessionCommands) -> Result<(), Box<dyn std::error::E
                                 let role = &msg.message.role;
                                 let content_str = match &msg.message.content {
                                     serde_json::Value::String(s) => s.clone(),
-                                    serde_json::Value::Array(arr) => {
-                                        arr.iter()
-                                            .filter_map(|b| b.get("text")
-                                                .and_then(|t| t.as_str()))
-                                            .collect::<Vec<_>>()
-                                            .join("\n")
-                                    }
+                                    serde_json::Value::Array(arr) => arr
+                                        .iter()
+                                        .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                                        .collect::<Vec<_>>()
+                                        .join("\n"),
                                     other => other.to_string(),
                                 };
-                                let preview = content_str.lines()
+                                let preview = content_str
+                                    .lines()
                                     .next()
                                     .unwrap_or(&content_str)
                                     .chars()
@@ -1851,12 +1954,11 @@ fn handle_sessions(command: SessionCommands) -> Result<(), Box<dyn std::error::E
                                 Some(format!("  [{role:12}] {preview}"))
                             }
                             _ => None,
-                        }
-                    }).collect();
+                        })
+                        .collect();
 
                     let total = msg_lines.len();
-                    let shown: Vec<&String> = msg_lines.iter().rev()
-                        .take(messages).rev().collect();
+                    let shown: Vec<&String> = msg_lines.iter().rev().take(messages).rev().collect();
 
                     println!("Session: {}", id);
                     println!("  Project:  {cwd}");
@@ -1889,13 +1991,14 @@ fn handle_todo_direct(command: TodoCommands) -> Result<(), Box<dyn std::error::E
         .unwrap_or_else(|_| PathBuf::from(".ante"));
 
     let todo_path = ante_dir.join("todo.json");
-    let mut todos = TodoList::open(todo_path)
-        .map_err(|e| format!("Failed to open todo list: {e}"))?;
+    let mut todos =
+        TodoList::open(todo_path).map_err(|e| format!("Failed to open todo list: {e}"))?;
 
     match command {
         TodoCommands::Add { text } => {
             let text = text.join(" ");
-            let item = todos.add(&text)
+            let item = todos
+                .add(&text)
                 .map_err(|e| format!("Failed to add todo: {e}"))?;
             println!("✅ Todo #{}: {}", item.id, item.text);
         }
@@ -1911,36 +2014,215 @@ fn handle_todo_direct(command: TodoCommands) -> Result<(), Box<dyn std::error::E
             }
         }
         TodoCommands::Done { id } => {
-            let item = todos.complete(id)
-                .map_err(|e| format!("Error: {e}"))?;
+            let item = todos.complete(id).map_err(|e| format!("Error: {e}"))?;
             println!("✅ Completed: {}", item.text);
         }
-        TodoCommands::Clear => {
-            match todos.clear_done() {
-                Ok(()) => println!("Cleared completed todos."),
-                Err(e) => eprintln!("Error: {e}"),
-            }
-        }
+        TodoCommands::Clear => match todos.clear_done() {
+            Ok(()) => println!("Cleared completed todos."),
+            Err(e) => eprintln!("Error: {e}"),
+        },
     }
     Ok(())
 }
 
+fn handle_doctor() -> Result<(), Box<dyn std::error::Error>> {
+    let _ = first_run_setup(false);
+    println!("Ante doctor");
+
+    report_check(
+        "root workspace",
+        Path::new("Cargo.toml").exists(),
+        "Cargo.toml present",
+    );
+    report_check(
+        "claude cli",
+        command_available("claude"),
+        "claude found in PATH",
+    );
+    report_check(
+        "opencode cli",
+        command_available("opencode"),
+        "opencode found in PATH",
+    );
+
+    let settings = load_settings().ok();
+    report_check(
+        "settings",
+        settings.is_some(),
+        "~/.ante/settings.json loadable",
+    );
+
+    let agents_dir = resolve_agents_dir(None)?;
+    let agent_registry = AgentRegistry::load(&agents_dir).ok();
+    report_check(
+        "agents directory",
+        agents_dir.exists(),
+        &format!("{}", agents_dir.display()),
+    );
+    report_check(
+        "agent registry",
+        agent_registry
+            .as_ref()
+            .map(|registry| registry.count() > 0)
+            .unwrap_or(false),
+        &format!(
+            "{} parseable agents",
+            agent_registry
+                .as_ref()
+                .map(|registry| registry.count())
+                .unwrap_or(0)
+        ),
+    );
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let ai_wiki = PathBuf::from(&home).join("ai-wiki");
+    let wiki_repo = PathBuf::from(&home).join("code").join("wiki-memory");
+    let wiki_dir = wiki_repo.join("wiki");
+    let memory_path = settings
+        .as_ref()
+        .map(|s| expand_tilde_path(s.memory.db_path.clone()))
+        .unwrap_or_else(|| {
+            if wiki_repo.exists() {
+                wiki_dir.join(".meta").join("ante-memory.db")
+            } else {
+                ai_wiki.join(".meta").join("ante-memory.db")
+            }
+        });
+    report_check(
+        "wiki-memory repo",
+        wiki_repo.exists(),
+        &format!("{}", wiki_repo.display()),
+    );
+    report_check(
+        "wiki-memory wiki dir",
+        wiki_dir.exists(),
+        &format!("{}", wiki_dir.display()),
+    );
+
+    let uses_direct_wiki = memory_path.starts_with(&wiki_dir);
+    let ai_wiki_ok = uses_direct_wiki
+        || if ai_wiki.exists() {
+            match fs::read_link(&ai_wiki) {
+                Ok(target) => target == wiki_dir,
+                Err(_) => false,
+            }
+        } else {
+            false
+        };
+    let wiki_link_detail = if uses_direct_wiki {
+        "using wiki-memory directly".to_string()
+    } else {
+        format!("{} -> {}", ai_wiki.display(), wiki_dir.display())
+    };
+    report_check("wiki-memory link", ai_wiki_ok, &wiki_link_detail);
+    report_check(
+        "memory path",
+        memory_path.parent().map(|p| p.exists()).unwrap_or(false),
+        &format!("{}", memory_path.display()),
+    );
+    let memory_open = MemoryStore::open(memory_path.clone(), 1).is_ok();
+    report_check("memory store", memory_open, "open shared memory database");
+
+    let sessions_dir = PathBuf::from(&home).join(".ante").join("sessions");
+    report_check(
+        "sessions directory",
+        sessions_dir.exists() || fs::create_dir_all(&sessions_dir).is_ok(),
+        &format!("{}", sessions_dir.display()),
+    );
+
+    let hook_dir = PathBuf::from(&home).join(".ante").join("hooks");
+    for hook in ["block-danger.sh", "pre_compact.py", "session_end.py"] {
+        let hook_path = hook_dir.join(hook);
+        report_check(
+            &format!("hook {hook}"),
+            hook_path.exists() && is_executable(&hook_path),
+            &format!("{}", hook_path.display()),
+        );
+    }
+
+    report_check(
+        "internal MCP tools",
+        probe_internal_mcp_tools(),
+        "tools/list exposes built-in tools",
+    );
+
+    if !ai_wiki_ok && ai_wiki.exists() {
+        println!(
+            "WARN ai-wiki exists but is not linked to wiki-memory. Migrate manually after backing up: {}",
+            ai_wiki.display()
+        );
+    }
+
+    Ok(())
+}
+
+fn report_check(name: &str, ok: bool, detail: &str) {
+    let status = if ok { "OK" } else { "WARN" };
+    println!("{status:4} {name}: {detail}");
+}
+
+fn command_available(command: &str) -> bool {
+    Command::new("sh")
+        .arg("-c")
+        .arg(format!("command -v {command} >/dev/null 2>&1"))
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn is_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return fs::metadata(path)
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+    }
+    #[cfg(not(unix))]
+    {
+        path.exists()
+    }
+}
+
+fn probe_internal_mcp_tools() -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let Ok(mut child) = Command::new(exe)
+        .arg("internal-mcp-server")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        let _ = writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{{}}}}"#
+        );
+    }
+    drop(child.stdin.take());
+
+    let Ok(output) = child.wait_with_output() else {
+        return false;
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    output.status.success()
+        && stdout.contains("memory_add")
+        && stdout.contains("memory_search")
+        && stdout.contains("memory_get_context")
+}
+
 fn handle_agents(command: AgentsCommands) -> Result<(), Box<dyn std::error::Error>> {
-    let ante_dir = std::env::var("HOME")
-        .map(|h| PathBuf::from(h).join(".ante"))
-        .unwrap_or_else(|_| PathBuf::from(".ante"));
+    let _ = first_run_setup(false);
 
     match command {
-        AgentsCommands::List => {
-            let agents_dir = ante_dir.join("agents");
-            if !agents_dir.exists() {
-                println!("No agents directory at: {}", agents_dir.display());
-                println!("Run `ante init` to create it.");
-                return Ok(());
-            }
-
-            let registry = AgentRegistry::load(&agents_dir)
-                .map_err(|e| format!("Failed to load agents: {e}"))?;
+        AgentsCommands::List { agent_dir } => {
+            let agents_dir = resolve_agents_dir(agent_dir)?;
+            let registry = load_agent_registry(&agents_dir)?;
 
             let agents = registry.all();
             if agents.is_empty() {
@@ -1952,33 +2234,281 @@ fn handle_agents(command: AgentsCommands) -> Result<(), Box<dyn std::error::Erro
                 }
             }
         }
-        AgentsCommands::Run { task } => {
+        AgentsCommands::Match { agent_dir, task } => {
             let task = task.join(" ");
-            let agents_dir = ante_dir.join("agents");
+            if task.trim().is_empty() {
+                return Err("agents match requires a task".into());
+            }
+            let agents_dir = resolve_agents_dir(agent_dir)?;
+            let registry = load_agent_registry(&agents_dir)?;
+            print_agent_match(&registry, &task);
+        }
+        AgentsCommands::Run {
+            backend,
+            model,
+            agent_dir,
+            cwd,
+            output,
+            dry_run,
+            read_only,
+            skip_permissions,
+            task,
+        } => {
+            let task = task.join(" ");
+            if task.trim().is_empty() {
+                return Err("agents run requires a task".into());
+            }
+
+            let agents_dir = resolve_agents_dir(agent_dir)?;
             eprintln!("[ante] Loading agents from: {}", agents_dir.display());
-
-            let registry = AgentRegistry::load(&agents_dir)
-                .map_err(|e| format!("Failed to load agents: {e}"))?;
-
-            let agent = registry.find_best_match(&task);
-            match agent {
-                Some(agent) => {
-                    println!("Best match: {} — {}", agent.name, agent.description);
-                    if !agent.prompt.is_empty() {
-                        println!("\nSystem prompt:\n{}", agent.prompt);
-                    }
+            let registry = load_agent_registry(&agents_dir)?;
+            let Some(agent) = registry.find_best_match(&task) else {
+                println!("No matching agent found for: {task}");
+                println!("Available agents:");
+                for agent in registry.all() {
+                    println!("  {} — {}", agent.name, agent.description);
                 }
-                None => {
-                    println!("No matching agent found for: {task}");
-                    println!("Available agents:");
-                    for agent in registry.all() {
-                        println!("  {} — {}", agent.name, agent.description);
-                    }
+                return Ok(());
+            };
+
+            let run_dir = cwd
+                .map(expand_tilde_path)
+                .unwrap_or(std::env::current_dir()?);
+            let selected_model = model
+                .or_else(|| agent.model.clone())
+                .or_else(|| std::env::var("ANTE_AGENT_MODEL").ok())
+                .unwrap_or_else(|| "opencode/deepseek-v4-flash".to_string());
+            let rendered_prompt = render_agent_task_prompt(agent, &task, read_only);
+
+            if dry_run || backend == "dry-run" {
+                println!("Best match: {} — {}", agent.name, agent.description);
+                println!("Backend: {backend}");
+                println!("Model: {}", normalize_opencode_model(&selected_model));
+                println!("CWD: {}", run_dir.display());
+                println!("\nRendered prompt:\n{rendered_prompt}");
+                return Ok(());
+            }
+
+            match backend.as_str() {
+                "opencode" => run_opencode_agent(
+                    agent,
+                    &rendered_prompt,
+                    &selected_model,
+                    &run_dir,
+                    output,
+                    skip_permissions,
+                )?,
+                other => {
+                    return Err(format!(
+                        "unsupported agent backend '{other}'. Supported backends: opencode, dry-run"
+                    )
+                    .into());
                 }
             }
         }
     }
     Ok(())
+}
+
+fn resolve_agents_dir(
+    override_dir: Option<PathBuf>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Some(dir) = override_dir {
+        return Ok(expand_tilde_path(dir));
+    }
+
+    let settings = load_settings().ok();
+    if let Some(settings) = settings {
+        return Ok(expand_tilde_path(settings.agents.directory));
+    }
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    Ok(PathBuf::from(home).join(".ante").join("agents"))
+}
+
+fn load_agent_registry(agents_dir: &Path) -> Result<AgentRegistry, Box<dyn std::error::Error>> {
+    if !agents_dir.exists() {
+        println!("No agents directory at: {}", agents_dir.display());
+        println!("Run `ante init` to create it.");
+        return Ok(AgentRegistry::load(agents_dir)?);
+    }
+
+    AgentRegistry::load(agents_dir)
+        .map_err(|e| format!("Failed to load agents from {}: {e}", agents_dir.display()).into())
+}
+
+fn print_agent_match(registry: &AgentRegistry, task: &str) {
+    match registry.find_best_match(task) {
+        Some(agent) => {
+            println!("Best match: {} — {}", agent.name, agent.description);
+            if !agent.prompt.is_empty() {
+                println!("\nSystem prompt:\n{}", agent.prompt);
+            }
+        }
+        None => {
+            println!("No matching agent found for: {task}");
+            println!("Available agents:");
+            for agent in registry.all() {
+                println!("  {} — {}", agent.name, agent.description);
+            }
+        }
+    }
+}
+
+fn render_agent_task_prompt(
+    agent: &agent_sdk::agents::loader::SubAgent,
+    task: &str,
+    read_only: bool,
+) -> String {
+    let mut prompt = String::new();
+    if !agent.prompt.trim().is_empty() {
+        prompt.push_str(agent.prompt.trim());
+        prompt.push_str("\n\n");
+    }
+    prompt.push_str("You are running as an Ante sub-agent.\n");
+    prompt.push_str(&format!("Agent: {}\n", agent.name));
+    prompt.push_str(&format!("Task: {task}\n"));
+    if !agent.tools.is_empty() {
+        prompt.push_str(&format!("Requested tools: {}\n", agent.tools.join(", ")));
+    }
+    if read_only {
+        prompt.push_str(
+            "Constraint: read-only inspection only. Do not create, edit, move, or delete files.\n",
+        );
+    }
+    prompt.push_str(
+        "Return a concise result with findings, files touched, and any remaining risks.\n",
+    );
+    prompt
+}
+
+fn run_opencode_agent(
+    agent: &agent_sdk::agents::loader::SubAgent,
+    prompt: &str,
+    model: &str,
+    cwd: &Path,
+    output: Option<PathBuf>,
+    skip_permissions: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !cwd.exists() {
+        return Err(format!("agent cwd does not exist: {}", cwd.display()).into());
+    }
+
+    let model = normalize_opencode_model(model);
+    let mut cmd = Command::new("opencode");
+    cmd.arg("run")
+        .arg("--model")
+        .arg(&model)
+        .arg("--dir")
+        .arg(cwd)
+        .arg("--title")
+        .arg(format!("ante:{}", agent.name))
+        .arg("--format")
+        .arg("default");
+    if skip_permissions {
+        cmd.arg("--dangerously-skip-permissions");
+    }
+    cmd.arg(prompt)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    eprintln!(
+        "[ante] Running agent '{}' with OpenCode model '{}' in {}",
+        agent.name,
+        model,
+        cwd.display()
+    );
+    let started = Instant::now();
+    let result = cmd
+        .output()
+        .map_err(|e| format!("failed to launch opencode. Is it installed and in PATH? {e}"))?;
+    let elapsed_ms = started.elapsed().as_millis();
+
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    let error_detected = opencode_output_has_error(&stderr);
+    let transcript = format!(
+        "# Ante Agent Run\n\nagent: {}\nbackend: opencode\nmodel: {}\ncwd: {}\nstatus: {}\n\n## Stdout\n\n{}\n\n## Stderr\n\n{}\n",
+        agent.name,
+        model,
+        cwd.display(),
+        result.status,
+        stdout,
+        stderr,
+    );
+    let summary = serde_json::json!({
+        "agent": agent.name,
+        "backend": "opencode",
+        "model": model,
+        "cwd": cwd.display().to_string(),
+        "status": result.status.to_string(),
+        "success": result.status.success() && !error_detected,
+        "errorDetected": error_detected,
+        "elapsedMs": elapsed_ms,
+        "stdoutBytes": result.stdout.len(),
+        "stderrBytes": result.stderr.len(),
+    });
+
+    if let Some(path) = output {
+        let path = expand_tilde_path(path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, transcript)?;
+        let json_path = path.with_extension("json");
+        fs::write(&json_path, serde_json::to_string_pretty(&summary)?)?;
+        println!("Wrote agent transcript: {}", path.display());
+        println!("Wrote agent summary: {}", json_path.display());
+    } else {
+        print!("{stdout}");
+        if !stderr.trim().is_empty() {
+            eprint!("{stderr}");
+        }
+    }
+
+    if !result.status.success() || error_detected {
+        return Err(format!(
+            "opencode agent '{}' failed with {}",
+            agent.name, result.status
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+fn normalize_opencode_model(model: &str) -> String {
+    if model.contains('/') {
+        model.to_string()
+    } else if model == "deepseek-v4-flash" {
+        "opencode/deepseek-v4-flash".to_string()
+    } else {
+        model.to_string()
+    }
+}
+
+fn opencode_output_has_error(stderr: &str) -> bool {
+    stderr.contains("ProviderModelNotFoundError")
+        || stderr.contains("Model not found")
+        || stderr.contains("Insufficient balance")
+        || stderr.contains("Authentication")
+        || stderr.contains("authentication_failed")
+        || stderr.contains("API key")
+}
+
+fn expand_tilde_path(path: PathBuf) -> PathBuf {
+    let Some(raw) = path.to_str() else {
+        return path;
+    };
+    if raw == "~" {
+        return std::env::var("HOME").map(PathBuf::from).unwrap_or(path);
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    path
 }
 
 fn handle_diagram(source: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {

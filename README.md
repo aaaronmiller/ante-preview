@@ -36,7 +36,7 @@ git clone <url> ante-spec
 cd ante-spec
 cargo build --release -p ante
 
-# First-run setup (creates ~/.ante/ and ~/ai-wiki/)
+# First-run setup (creates ~/.ante/ and shared wiki memory)
 ./target/release/ante init
 
 # Start a fresh interactive session
@@ -47,32 +47,36 @@ cargo build --release -p ante
 
 # Query once and exit
 ./target/release/ante query "explain this code"
+
+# Check local readiness
+./target/release/ante doctor
 ```
 
 ## Wiki-Memory Integration
 
-Ante uses `~/ai-wiki` as the canonical shared memory location for all agents.
+Ante uses the wiki-memory repo when it is installed at `~/code/wiki-memory`; otherwise it falls back to `~/ai-wiki`.
 
 ### How it works
 
-- `MemoryStore` data lives at `~/ai-wiki/.meta/ante-memory.db`
-- When [wiki-memory](https://github.com/cheta/wiki-memory) is installed at `~/code/wiki-memory`, `ante init` creates a symlink: `~/ai-wiki → ~/code/wiki-memory/wiki`
+- `MemoryStore` data lives at `~/code/wiki-memory/wiki/.meta/ante-memory.db` when that repo exists
+- Without wiki-memory, `MemoryStore` data lives at `~/ai-wiki/.meta/ante-memory.db`
+- `ante init` creates missing wiki directories, but does not replace an existing `~/ai-wiki` directory
 - The wiki-memory **dream agent** can process raw/ sources, consolidate observations, and auto-create skills from repeated patterns
-- All agents (pi, ante, Claude Code, etc.) share the same `~/ai-wiki` — what one learns, all know
-- The embedded memory MCP server (`ante memory add/search/context`) reads/writes the same database
+- All agents (pi, ante, Claude Code, etc.) can share the same wiki-backed memory database — what one learns, all know
+- The embedded MCP server exposes `memory_add`, `memory_search`, and `memory_get_context`
 - wiki-memory hooks (`pre_compact.py`, `session_end.py`) are registered in `~/.ante/settings.json`
 
 ### Architecture
 
 ```
-~/code/wiki-memory/         # <-- git repo, changes propagate instantly via symlink
-  └── wiki/ → ~/ai-wiki     # <-- actual data directory
+~/code/wiki-memory/         # <-- git repo, preferred when present
+  └── wiki/                 # <-- actual data directory
       ├── pages/             #     auto-consolidated knowledge articles
       ├── raw/               #     source observations
       └── .meta/
           └── ante-memory.db # <-- Ante MemoryStore (JSON-backed)
 
-~/.ante/settings.json        # --> memory.dbPath = ~/ai-wiki/.meta/ante-memory.db
+~/.ante/settings.json        # legacy paths are normalized at runtime
 ```
 
 > **No wiki-memory? No problem.** If the repo isn't present, `~/ai-wiki` is created as a plain directory; everything still works.
@@ -90,6 +94,7 @@ Ante uses `~/ai-wiki` as the canonical shared memory location for all agents.
 | `ante todo add/list/done/clear` | Direct | Direct todo list operations |
 | `ante sessions list/show/resume` | Direct | Session management (list, inspect, get resume command) |
 | `ante agents list/run` | Direct | Sub-agent registry and dispatch |
+| `ante doctor` | Direct | Readiness check for CLI tools, settings, parseable agents, hooks, internal MCP tools, sessions, and wiki-memory |
 | `ante diagram <mermaid>` | Direct | Render Mermaid to terminal ASCII |
 
 ## All Arguments
@@ -132,7 +137,7 @@ Ante uses `~/ai-wiki` as the canonical shared memory location for all agents.
 
 | Subcommand | Arguments | Description |
 |-----------|-----------|-------------|
-| `add` | `--content <text>`, `--tags <tags>`, `--project <name>` | Store a memory |
+| `add` | `<text>`, `--tags <tags>`, `--project <name>` | Store a memory |
 | `search` | `--query <text>` | Search stored memories |
 | `context` | `--project <name>`, `--max <count>` | Get context for a project |
 
@@ -158,7 +163,8 @@ Ante uses `~/ai-wiki` as the canonical shared memory location for all agents.
 | Subcommand | Arguments | Description |
 |-----------|-----------|-------------|
 | `list` | — | List registered sub-agents |
-| `run` | `<task>` | Find best-match agent for a task |
+| `match` | `<task>` | Find best-match agent for a task without executing |
+| `run` | `<task>`, `--backend <opencode|dry-run>`, `--model <provider/model>`, `--agent-dir <path>`, `--cwd <path>`, `--output <path>`, `--dry-run`, `--read-only`, `--skip-permissions` | Run the best matching agent through OpenCode or render the execution plan. When `--output run.md` is used, Ante also writes `run.json` telemetry. |
 
 ### Diagram mode (`ante diagram`)
 

@@ -6,11 +6,11 @@
 use std::fs;
 use std::path::PathBuf;
 
+use ante_protocol_shape::event::EventType;
 use ante_protocol_shape::settings::{
     AgentsConfig, ClaudeCompatFlags, ContextBudget, HookDefinition, HookMatchRule, HooksConfig,
     MemoryConfig, Settings,
 };
-use ante_protocol_shape::event::EventType;
 use thiserror::Error;
 
 /// Default blocklist hook script content (shipped with Ante).
@@ -21,6 +21,18 @@ const PRE_COMPACT_SCRIPT: &[u8] = include_bytes!("hooks/pre_compact.py");
 
 /// Session-end summary logger hook script (shipped with Ante).
 const SESSION_END_SCRIPT: &[u8] = include_bytes!("hooks/session_end.py");
+
+const DEFAULT_AGENT: &str = r#"---
+name: general-purpose
+description: Handle general codebase inspection, documentation, debugging, and implementation tasks.
+prompt: You are an Ante sub-agent. Work within the requested scope, prefer small verifiable changes, and report concrete findings, files touched, verification run, and residual risks.
+tools: Read,Bash,Write
+model: opencode/deepseek-v4-flash-free
+max_turns: 8
+---
+
+Use the supervising agent's task as the source of truth. Avoid destructive file operations unless explicitly authorized.
+"#;
 
 #[derive(Debug, Error)]
 pub enum InitError {
@@ -51,6 +63,10 @@ pub fn first_run_setup(force: bool) -> Result<bool, InitError> {
 
     let settings_path = ante_dir.join("settings.json");
     if settings_path.exists() && !force {
+        create_dir_if_missing(&ante_dir)?;
+        create_dir_if_missing(&ante_dir.join("hooks"))?;
+        create_dir_if_missing(&ante_dir.join("agents"))?;
+        install_default_agent(&ante_dir)?;
         return Ok(false);
     }
 
@@ -59,6 +75,7 @@ pub fn first_run_setup(force: bool) -> Result<bool, InitError> {
     create_dir_if_missing(&ante_dir.join("hooks"))?;
     create_dir_if_missing(&ante_dir.join("agents"))?;
     create_dir_if_missing(&ante_dir.join("run"))?;
+    install_default_agent(&ante_dir)?;
 
     // ── Shared memory directory (wiki-memory compatible) ───────────────
     // All agents share the same ~/ai-wiki directory.  If the wiki-memory
@@ -68,11 +85,15 @@ pub fn first_run_setup(force: bool) -> Result<bool, InitError> {
     let ai_wiki = default_ai_wiki_dir();
     if !ai_wiki.exists() {
         // Try to symlink to wiki-memory repo if present
-        let wiki_memory_path = default_ante_dir() // ~ -> ~/code/wiki-memory/wiki
-            .parent()  // ~
-            .map(|p| p.join("code").join("wiki-memory").join("wiki"));
+        let wiki_memory_path =
+            default_ante_dir() // ~ -> ~/code/wiki-memory/wiki
+                .parent() // ~
+                .map(|p| p.join("code").join("wiki-memory").join("wiki"));
         let symlinked = if let Some(ref src) = wiki_memory_path {
-            if src.exists() {
+            if src.exists() || src.parent().map(|p| p.exists()).unwrap_or(false) {
+                if !src.exists() {
+                    create_dir_if_missing(src)?;
+                }
                 #[cfg(unix)]
                 {
                     std::os::unix::fs::symlink(src, &ai_wiki).is_ok()
@@ -147,11 +168,9 @@ pub fn first_run_setup(force: bool) -> Result<bool, InitError> {
 
     // Write default settings with blocklist hook
     let settings = default_settings(&ante_dir);
-    let json = serde_json::to_string_pretty(&settings).map_err(|source| {
-        InitError::WriteFile {
-            path: settings_path.clone(),
-            source: std::io::Error::new(std::io::ErrorKind::InvalidData, source.to_string()),
-        }
+    let json = serde_json::to_string_pretty(&settings).map_err(|source| InitError::WriteFile {
+        path: settings_path.clone(),
+        source: std::io::Error::new(std::io::ErrorKind::InvalidData, source.to_string()),
     })?;
 
     fs::write(&settings_path, &json).map_err(|source| InitError::WriteFile {
@@ -160,6 +179,17 @@ pub fn first_run_setup(force: bool) -> Result<bool, InitError> {
     })?;
 
     Ok(true)
+}
+
+fn install_default_agent(ante_dir: &PathBuf) -> Result<(), InitError> {
+    let agent_path = ante_dir.join("agents").join("general-purpose.md");
+    if agent_path.exists() {
+        return Ok(());
+    }
+    fs::write(&agent_path, DEFAULT_AGENT).map_err(|source| InitError::WriteFile {
+        path: agent_path,
+        source,
+    })
 }
 
 /// Returns default settings with the blocklist, pre_compact, and session_end hooks pre-registered.
@@ -213,7 +243,7 @@ fn default_settings(ante_dir: &PathBuf) -> Settings {
             max_concurrent: 4,
         },
         memory: MemoryConfig {
-            db_path: ante_dir.join("memory").join("ante-memory.db"),
+            db_path: default_memory_db_path(),
             max_context_memories: 20,
             auto_index: true,
         },
@@ -257,6 +287,23 @@ fn default_ai_wiki_dir() -> PathBuf {
     } else {
         PathBuf::from("./ai-wiki")
     }
+}
+
+fn default_memory_db_path() -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        let wiki_memory = PathBuf::from(&home).join("code").join("wiki-memory");
+        if wiki_memory.exists() {
+            return wiki_memory
+                .join("wiki")
+                .join(".meta")
+                .join("ante-memory.db");
+        }
+        return PathBuf::from(home)
+            .join("ai-wiki")
+            .join(".meta")
+            .join("ante-memory.db");
+    }
+    PathBuf::from("./ai-wiki/.meta/ante-memory.db")
 }
 
 fn create_dir_if_missing(path: &PathBuf) -> Result<(), InitError> {

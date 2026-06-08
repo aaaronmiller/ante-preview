@@ -3,6 +3,16 @@
 ## [Unreleased]
 
 ### Added
+- Added a root Cargo workspace so `cargo build -p ante` and README build commands work from the project root.
+- Added `ante doctor` for local readiness checks covering CLI tools, settings, agents, wiki-memory, and memory path wiring.
+- Added executable OpenCode-backed `ante agents run` with `--agent-dir`, `--cwd`, `--output`, `--dry-run`, `--read-only`, `--skip-permissions`, and model override support.
+- Added JSON telemetry output beside markdown transcripts for `ante agents run --output`.
+- Added `ante agents match` for registry-only agent matching without execution.
+- Added default `general-purpose` agent seeding during `ante init` so fresh installs have a usable registry.
+- Added built-in MCP memory tools: `memory_add`, `memory_search`, and `memory_get_context`.
+- Added runtime wiki-memory preference for `/home/misscheta/code/wiki-memory/wiki/.meta/ante-memory.db` when the wiki-memory repo is present.
+- Added `PRODUCTION_AGENT_DEPLOYMENT_NOTES.md` documenting the 2026-06-06 production-readiness audit of Ante agent deployment, README accuracy, OpenCode gap, and improvement recommendations.
+- Added `ante-test/demo-home/.ante/agents/music-auditor.md` as a concrete demo fixture for validating `ante agents run` registry matching.
 - Expanded status bar design: surface tool call ok/fail/blocked, sub-agent active/completed/failed, hooks fired/blocked, HITL approved/denied, memory entries, todo counts, MCP connected/configured ratio, budget percentage, turns/sec rate
 - Status bar semantic color palette: cyan (primary), green (ok), yellow (warn), red (critical), blue (stats), purple (agents), gray (muted) — no rainbow vomit, every color has a job
 - Two layout modes: compact single-line (≥60ch) and detailed two-line (≥80ch)
@@ -14,6 +24,11 @@
 - Sub-agent hook dispatch integration test: 5 tests covering callback invocation, wrong event type filtering, error non-blocking, deny decision propagation, and multi-hook chaining
 
 ### Fixed
+- Fixed legacy settings normalization so old `~/.ante/memory/ante-memory.db` paths resolve to the shared wiki-memory store at runtime.
+- Fixed generated hook scripts to write observational memory entries to the shared wiki-memory store instead of `~/.ante/memory`.
+- Fixed stale README claims around agent execution, memory MCP tools, wiki-memory storage, and memory command syntax.
+- Fixed OpenCode error detection to avoid treating generic stderr text as provider failure while still catching missing models, auth failures, API-key problems, and insufficient balance.
+- Fixed session manager mutex handling to recover from poisoned locks instead of panicking.
 - Status bar token/cost double-counting: `add_tokens` was receiving cumulative `budget_snapshot` values each turn, causing exponential over-reporting. Changed callers to `set_usage()` which replaces rather than accumulates.
 - Removed unused status bar code: `C_WHITE`, `BOLD`, `bold()`, `set_color()`, `set_max_context()`, `set_max_cost()`, `add_tokens()`, `track_tool_failure()`, `set_subagent_stats()`, `set_risk_level()` — left over from pre-redesign API
 - TCP transport for inter-agent broker: `Transport::Tcp` with `Transport::tcp()`, `local_address()`, full test coverage
@@ -332,4 +347,3 @@
 - Fix OAuth callback server cancellation and bind errors
 - Adjust OpenAI reasoning effort mapping
 - Dependency updates
-

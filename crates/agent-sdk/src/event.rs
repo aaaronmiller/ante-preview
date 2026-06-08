@@ -5,13 +5,11 @@
 
 use std::sync::Arc;
 
-use ante_protocol_shape::{
-    EventPayload, HookDecision, HookMatchRule, HookPipelineResult,
-};
+use ante_protocol_shape::{EventPayload, HookDecision, HookMatchRule, HookPipelineResult};
 use tokio::sync::RwLock;
 
 use crate::hooks::registry::HookRegistry;
-use crate::hooks::{HookExecError, HookExecutor, HookOutput, InvokeLlm, InvokeMcp, InvokeSubAgent};
+use crate::hooks::{HookExecutor, HookOutput, InvokeLlm, InvokeMcp, InvokeSubAgent};
 
 /// The central event dispatch bus.
 ///
@@ -94,7 +92,10 @@ impl EventBus {
                     )
                     .await
                 {
-                    Ok(HookOutput { hook_decision, hook_name }) => {
+                    Ok(HookOutput {
+                        hook_decision,
+                        hook_name,
+                    }) => {
                         hooks_executed.push(hook_name);
                         decision = decision.merge(hook_decision);
                         // Early exit on Deny — no point running more hooks

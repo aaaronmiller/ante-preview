@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""session_end.py — Ante hook: log session summary at end of session.
+"""pre_compact.py — Ante hook: log memory/program usage before context compaction.
 
-Receives a SessionEnd event payload on stdin:
-  - total_input_tokens: total input tokens used in this session
-  - total_output_tokens: total output tokens used
-  - total_cost_usd: approximate cost in USD
-  - duration_secs: session duration in seconds
-  - reason: reason for session end (optional)
+Receives a PreCompact event payload on stdin (CompactPayload fields):
+  - current_tokens: current token count in context
+  - budget_tokens: context budget token limit
+  - current_cost_usd: current session cost
+  - budget_cost_usd: cost limit (optional)
 
 Writes a memory entry to ~/ai-wiki/.meta/ante-memory.db and logs to
-~/.ante/run/session_end.log.
+~/.ante/run/pre_compact.log.
 
 Always returns {"type":"allow"} — this hook is observational only.
 """
@@ -42,9 +41,6 @@ def memory_db_path() -> str:
         return os.path.join(os.path.expanduser(ai_wiki), ".meta", "ante-memory.db")
     home = os.environ.get("HOME", "")
     if home:
-        wiki_memory = os.path.join(home, "code", "wiki-memory")
-        if os.path.exists(wiki_memory):
-            return os.path.join(wiki_memory, "wiki", ".meta", "ante-memory.db")
         return os.path.join(home, "ai-wiki", ".meta", "ante-memory.db")
     return os.path.expanduser("~/ai-wiki/.meta/ante-memory.db")
 
@@ -86,29 +82,15 @@ def append_memory_entry(entry: dict) -> None:
 
 
 def append_run_log(ante: str, event: dict) -> None:
-    """Append a line to the session_end run log."""
+    """Append a line to the pre_compact run log."""
     run_dir = os.path.join(ante, "run")
     os.makedirs(run_dir, exist_ok=True)
-    log_path = os.path.join(run_dir, "session_end.log")
+    log_path = os.path.join(run_dir, "pre_compact.log")
     try:
         with open(log_path, "a") as f:
             f.write(json.dumps(event) + "\n")
     except OSError:
         pass  # Best-effort logging
-
-
-def format_duration(secs: int) -> str:
-    """Format seconds as a human-readable duration string."""
-    hours = secs // 3600
-    minutes = (secs % 3600) // 60
-    seconds = secs % 60
-    parts = []
-    if hours > 0:
-        parts.append(f"{hours}h")
-    if minutes > 0:
-        parts.append(f"{minutes}m")
-    parts.append(f"{seconds}s")
-    return "".join(parts)
 
 
 def main() -> None:
@@ -121,30 +103,28 @@ def main() -> None:
 
     ante = ante_dir()
 
-    # Extract session-end fields
-    total_input = event.get("total_input_tokens", 0)
-    total_output = event.get("total_output_tokens", 0)
-    total_cost = event.get("total_cost_usd", 0.0)
-    duration = event.get("duration_secs", 0)
-    reason = event.get("reason", "unknown")
+    # Extract compact-specific fields (fall back to safe defaults)
+    current_tokens = event.get("current_tokens", 0)
+    budget_tokens = event.get("budget_tokens", 200_000)
+    current_cost = event.get("current_cost_usd", 0.0)
+    budget_cost = event.get("budget_cost_usd")
 
     ts = ulid_timestamp()
-    total_tokens = total_input + total_output
 
     # Build memory entry
+    budget_str = f"${budget_cost:.4f}" if budget_cost is not None else "unlimited"
     content = (
-        f"[session-end] session complete: "
-        f"{total_tokens} tokens ({total_input} in / {total_output} out), "
-        f"${total_cost:.4f}, duration: {format_duration(duration)}, "
-        f"reason: {reason}"
+        f"[pre-compact] tokens: {current_tokens}/{budget_tokens} "
+        f"({current_tokens * 100.0 / max(budget_tokens, 1):.1f}%), "
+        f"cost: ${current_cost:.4f} (budget: {budget_str})"
     )
 
     entry = {
         "id": "mem-" + ts,
         "content": content,
-        "tags": "memory,session,usage",
+        "tags": "memory,compact,snapshot",
         "project": "default",
-        "timestamp": ts[:16],
+        "timestamp": ts[:16],  # First 16 hex chars = microsecond precision
     }
 
     # Append to memory store and run log

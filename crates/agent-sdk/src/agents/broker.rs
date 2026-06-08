@@ -15,14 +15,8 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::net::tcp::{OwnedWriteHalf as TcpOwnedWriteHalf, ReadHalf as TcpReadHalf};
-use tokio::net::unix::{OwnedWriteHalf as UnixOwnedWriteHalf, ReadHalf as UnixReadHalf};
 use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 use tokio::sync::{Mutex, broadcast, oneshot};
-
-/// Operating system's ephemeral port range start (commonly 49152 on Linux).
-/// We use this as a default port hint; the OS will assign the actual port.
-const EPHEMERAL_PORT_START: u16 = 49152;
 
 /// Format a UNIX timestamp as an RFC 3339-compatible UTC string
 /// without requiring the `chrono` crate.
@@ -61,7 +55,11 @@ fn seconds_to_ymdhms(secs: u64) -> (i32, u32, u32, u32, u32, u32) {
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { (mp + 3) as u32 } else { (mp - 9) as u32 };
+    let m = if mp < 10 {
+        (mp + 3) as u32
+    } else {
+        (mp - 9) as u32
+    };
     let y = if m <= 2 { y + 1 } else { y };
 
     (y, m, d, hh, mm, ss)
@@ -74,14 +72,9 @@ fn seconds_to_ymdhms(secs: u64) -> (i32, u32, u32, u32, u32, u32) {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Transport {
     /// Unix domain socket at the given path.
-    Unix {
-        path: PathBuf,
-    },
+    Unix { path: PathBuf },
     /// TCP connection on the given address.
-    Tcp {
-        host: String,
-        port: u16,
-    },
+    Tcp { host: String, port: u16 },
 }
 
 impl Transport {
@@ -201,16 +194,19 @@ impl Broker {
                 ListenerKind::Unix(l)
             }
             Transport::Tcp { host, port } => {
-                let addr: SocketAddr = format!("{host}:{port}")
-                    .parse()
+                let addr: SocketAddr =
+                    format!("{host}:{port}")
+                        .parse()
+                        .map_err(|e| BrokerError::Bind {
+                            address: transport.address_string(),
+                            source: std::io::Error::new(std::io::ErrorKind::InvalidInput, e),
+                        })?;
+                let l = TcpListener::bind(addr)
+                    .await
                     .map_err(|e| BrokerError::Bind {
                         address: transport.address_string(),
-                        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, e),
+                        source: e,
                     })?;
-                let l = TcpListener::bind(addr).await.map_err(|e| BrokerError::Bind {
-                    address: transport.address_string(),
-                    source: e,
-                })?;
                 ListenerKind::Tcp(l)
             }
         };
@@ -292,7 +288,10 @@ impl Broker {
     }
 
     /// Accept a single connection, returning a generic stream handle.
-    async fn accept_one(&self, listener: &ListenerKind) -> Result<Box<dyn AsyncReadWriteUnpinSend>, std::io::Error> {
+    async fn accept_one(
+        &self,
+        listener: &ListenerKind,
+    ) -> Result<Box<dyn AsyncReadWriteUnpinSend>, std::io::Error> {
         match listener {
             ListenerKind::Unix(l) => {
                 let (stream, _) = l.accept().await?;
@@ -349,7 +348,9 @@ impl Broker {
         };
         {
             let mut w = writer.lock().await;
-            let _ = w.write_all(serde_json::to_string(&ack).unwrap().as_bytes()).await;
+            let _ = w
+                .write_all(serde_json::to_string(&ack).unwrap().as_bytes())
+                .await;
             let _ = w.write_all(b"\n").await;
             let _ = w.flush().await;
         }
@@ -573,12 +574,13 @@ pub async fn connect_to_broker(
             Box::new(s)
         }
         Transport::Tcp { host, port } => {
-            let addr: SocketAddr = format!("{host}:{port}")
-                .parse()
-                .map_err(|e| BrokerError::Bind {
-                    address: transport.address_string(),
-                    source: std::io::Error::new(std::io::ErrorKind::InvalidInput, e),
-                })?;
+            let addr: SocketAddr =
+                format!("{host}:{port}")
+                    .parse()
+                    .map_err(|e| BrokerError::Bind {
+                        address: transport.address_string(),
+                        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, e),
+                    })?;
             let s = TcpStream::connect(addr).await?;
             Box::new(s)
         }
@@ -704,8 +706,9 @@ mod tests {
         let mut _writers = Vec::new();
         for i in 1..=3 {
             let transport = Transport::unix(sock_path.clone());
-            let (_h, w, ack_rx) =
-                connect_to_broker(&transport, &format!("agent-{i}")).await.unwrap();
+            let (_h, w, ack_rx) = connect_to_broker(&transport, &format!("agent-{i}"))
+                .await
+                .unwrap();
             _writers.push((_h, w));
             let _ = ack_rx.await;
         }
@@ -798,8 +801,9 @@ mod tests {
         let mut _writers = Vec::new();
         for i in 1..=3 {
             let transport = Transport::tcp("127.0.0.1", port);
-            let (_h, w, ack_rx) =
-                connect_to_broker(&transport, &format!("agent-{i}")).await.unwrap();
+            let (_h, w, ack_rx) = connect_to_broker(&transport, &format!("agent-{i}"))
+                .await
+                .unwrap();
             _writers.push((_h, w));
             let _ = ack_rx.await;
         }
@@ -880,7 +884,6 @@ mod tests {
         assert_ne!(addr, "127.0.0.1:0");
         let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
         assert!(port > 0);
-        assert!(port <= 65535);
 
         broker.shutdown().await;
     }

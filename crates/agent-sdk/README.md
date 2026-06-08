@@ -75,7 +75,7 @@ cargo run --example claude_code -- --model claude-sonnet-4-5    # REPL with mode
 
 - The SDK shells out to the external `claude` executable; it does not bundle
   Claude Code.
-- In-process MCP servers and hook callbacks (as in the Python SDK) are not
-  implemented yet.
+- Ante includes hook callback plumbing and built-in MCP server support; this SDK
+  still uses the external `claude` executable for the core agent transport.
 - Additional agent runtimes may be added in the future behind the same SDK
   surface.

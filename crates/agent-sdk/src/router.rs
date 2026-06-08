@@ -12,11 +12,11 @@ use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-const FEEDBACK_WINDOW: usize = 100;      // How many recent entries to consider
+const FEEDBACK_WINDOW: usize = 100; // How many recent entries to consider
 const FAILURE_PENALTY_THRESHOLD: f64 = 0.25; // Fraction of failures that triggers a penalty
-const CAPABILITY_PENALTY: u8 = 2;         // Points subtracted from capability on sustained failures
-const RECOVERY_WINDOW: usize = 20;        // Consecutive successes needed to lift a penalty
-const FALLBACK_MAX_RETRIES: usize = 3;    // Maximum fallback attempts
+const CAPABILITY_PENALTY: u8 = 2; // Points subtracted from capability on sustained failures
+const RECOVERY_WINDOW: usize = 20; // Consecutive successes needed to lift a penalty
+const FALLBACK_MAX_RETRIES: usize = 3; // Maximum fallback attempts
 
 /// A configured model pool entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,12 +62,26 @@ pub struct RoutingFeedback {
 impl RoutingFeedback {
     /// Create a success feedback entry.
     pub fn success(model: String, latency_ms: u64, input_tokens: u64, output_tokens: u64) -> Self {
-        Self { model, success: true, latency_ms, input_tokens, output_tokens, error_category: None }
+        Self {
+            model,
+            success: true,
+            latency_ms,
+            input_tokens,
+            output_tokens,
+            error_category: None,
+        }
     }
 
     /// Create a failure feedback entry.
     pub fn failure(model: String, latency_ms: u64, error_category: Option<String>) -> Self {
-        Self { model, success: false, latency_ms, input_tokens: 0, output_tokens: 0, error_category }
+        Self {
+            model,
+            success: false,
+            latency_ms,
+            input_tokens: 0,
+            output_tokens: 0,
+            error_category,
+        }
     }
 }
 
@@ -75,7 +89,7 @@ impl RoutingFeedback {
 #[derive(Debug, Clone)]
 struct FeedbackEntry {
     feedback: RoutingFeedback,
-    timestamp: std::time::Instant,
+    _timestamp: std::time::Instant,
 }
 
 /// Errors from the model router.
@@ -92,6 +106,9 @@ pub enum RouterError {
 
     #[error("All fallback models exhausted")]
     AllFallbacksExhausted,
+
+    #[error("Fallback failed: {0}")]
+    FallbackFailed(String),
 }
 
 /// Rule-based model router with feedback learning and fallback support.
@@ -160,11 +177,10 @@ impl ModelRouter {
             let b_penalized = self.penalized_models.contains(&b.model);
             // Non-penalized models are preferred
             match a_penalized.cmp(&b_penalized) {
-                std::cmp::Ordering::Equal => {
-                    a.cost_per_1k_input
-                        .partial_cmp(&b.cost_per_1k_input)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                }
+                std::cmp::Ordering::Equal => a
+                    .cost_per_1k_input
+                    .partial_cmp(&b.cost_per_1k_input)
+                    .unwrap_or(std::cmp::Ordering::Equal),
                 other => other,
             }
         });
@@ -181,11 +197,13 @@ impl ModelRouter {
 
         Ok(RouterDecision {
             selected_model: selected.model.clone(),
-            reason: format!("{} task (eff_cap={}, cost=${:.4}){}",
+            reason: format!(
+                "{} task (eff_cap={}, cost=${:.4}){}",
                 complexity.as_str(),
                 self.effective_capability(&selected.model),
                 input_cost + output_cost,
-                penalty_flag),
+                penalty_flag
+            ),
             estimated_cost_cents: input_cost + output_cost,
             estimated_tokens,
         })
@@ -224,8 +242,10 @@ impl ModelRouter {
         let mut candidates: Vec<&ModelPoolEntry> = self
             .models
             .iter()
-            .filter(|m| self.effective_capability(&m.model) >= required_capability
-                || m.max_context >= estimated_tokens)
+            .filter(|m| {
+                self.effective_capability(&m.model) >= required_capability
+                    || m.max_context >= estimated_tokens
+            })
             .collect();
 
         if candidates.is_empty() {
@@ -239,7 +259,7 @@ impl ModelRouter {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        let mut last_error = String::new();
+        let mut last_error: Option<String> = None;
         let mut attempts = 0;
 
         for candidate in &candidates {
@@ -251,23 +271,33 @@ impl ModelRouter {
             match feedback_collector(candidate.model.clone()).await {
                 Ok(()) => {
                     let input_cost = candidate.cost_per_1k_input * estimated_tokens as f64 / 1000.0;
-                    let output_cost = candidate.cost_per_1k_output * (estimated_tokens as f64 / 4.0) / 1000.0;
+                    let output_cost =
+                        candidate.cost_per_1k_output * (estimated_tokens as f64 / 4.0) / 1000.0;
                     return Ok(RouterDecision {
                         selected_model: candidate.model.clone(),
-                        reason: format!("fallback-selected: {} (attempt {})", candidate.model, attempts),
+                        reason: format!(
+                            "fallback-selected: {} (attempt {})",
+                            candidate.model, attempts
+                        ),
                         estimated_cost_cents: input_cost + output_cost,
                         estimated_tokens,
                     });
                 }
                 Err(feedback) => {
-                    last_error = feedback
-                        .error_category
-                        .unwrap_or_else(|| "unknown".to_string());
+                    last_error = Some(
+                        feedback
+                            .error_category
+                            .unwrap_or_else(|| "unknown".to_string()),
+                    );
                 }
             }
         }
 
-        Err(RouterError::AllFallbacksExhausted)
+        if let Some(error) = last_error {
+            Err(RouterError::FallbackFailed(error))
+        } else {
+            Err(RouterError::AllFallbacksExhausted)
+        }
     }
 
     // ─── Feedback Loop ───────────────────────────────────────────────────
@@ -286,7 +316,7 @@ impl ModelRouter {
 
         self.feedback_history.push_back(FeedbackEntry {
             feedback,
-            timestamp: std::time::Instant::now(),
+            _timestamp: std::time::Instant::now(),
         });
 
         // Update consecutive successes counter
@@ -366,7 +396,11 @@ impl ModelRouter {
             model: model.to_string(),
             total_attempts: total,
             total_failures: failures,
-            failure_rate: if total > 0 { failures as f64 / total as f64 } else { 0.0 },
+            failure_rate: if total > 0 {
+                failures as f64 / total as f64
+            } else {
+                0.0
+            },
             base_capability: base_cap,
             effective_capability: self.effective_capability(model),
             penalized: self.penalized_models.contains(model),
@@ -438,24 +472,42 @@ fn classify_complexity(task: &str) -> TaskComplexity {
 
     // Complex indicators: multi-step, analysis, architecture, security, data
     let complex_keywords = [
-        "architect", "design", "analyze", "security", "deploy",
-        "refactor", "optimize", "migrate", "pipeline", "infrastructure",
-        "multi-step", "orchestrat", "distributed", "asynchronous",
+        "architect",
+        "design",
+        "analyze",
+        "security",
+        "deploy",
+        "refactor",
+        "optimize",
+        "migrate",
+        "pipeline",
+        "infrastructure",
+        "multi-step",
+        "orchestrat",
+        "distributed",
+        "asynchronous",
     ];
     let has_complex = complex_keywords.iter().any(|k| lower.contains(k));
 
     // Simple indicators: list, read, search, copy, rename, format
     let simple_keywords = [
-        "list", "read", "show", "search", "find", "grep",
-        "copy", "move", "rename", "format", "lint",
-        "count", "sort", "echo",
+        "list", "read", "show", "search", "find", "grep", "copy", "move", "rename", "format",
+        "lint", "count", "sort", "echo",
     ];
     let has_simple = simple_keywords.iter().any(|k| lower.contains(k));
 
     // Moderately complex keywords
     let moderate_keywords = [
-        "build", "write", "create", "edit", "update", "test",
-        "configure", "install", "compile", "run",
+        "build",
+        "write",
+        "create",
+        "edit",
+        "update",
+        "test",
+        "configure",
+        "install",
+        "compile",
+        "run",
     ];
     let has_moderate = moderate_keywords.iter().any(|k| lower.contains(k));
 
@@ -511,8 +563,12 @@ mod tests {
     #[test]
     fn complex_task_selects_powerful_model() {
         let router = ModelRouter::new(test_pool());
-        let decision = router.select("design system architecture for microservices", 5).unwrap();
-        assert!(decision.selected_model.contains("sonnet") || decision.selected_model.contains("opus"));
+        let decision = router
+            .select("design system architecture for microservices", 5)
+            .unwrap();
+        assert!(
+            decision.selected_model.contains("sonnet") || decision.selected_model.contains("opus")
+        );
     }
 
     #[test]
@@ -524,7 +580,10 @@ mod tests {
     #[test]
     fn classification_identifies_simple() {
         assert_eq!(classify_complexity("list files"), TaskComplexity::Simple);
-        assert_eq!(classify_complexity("search for pattern"), TaskComplexity::Simple);
+        assert_eq!(
+            classify_complexity("search for pattern"),
+            TaskComplexity::Simple
+        );
     }
 
     #[test]
@@ -541,8 +600,14 @@ mod tests {
 
     #[test]
     fn classification_identifies_moderate() {
-        assert_eq!(classify_complexity("build a web server"), TaskComplexity::Moderate);
-        assert_eq!(classify_complexity("write unit tests"), TaskComplexity::Moderate);
+        assert_eq!(
+            classify_complexity("build a web server"),
+            TaskComplexity::Moderate
+        );
+        assert_eq!(
+            classify_complexity("write unit tests"),
+            TaskComplexity::Moderate
+        );
     }
 
     #[test]
@@ -567,7 +632,10 @@ mod tests {
         // Record many successes
         for _ in 0..10 {
             router.record_feedback(RoutingFeedback::success(
-                "claude-haiku-3.5".into(), 100, 100, 50,
+                "claude-haiku-3.5".into(),
+                100,
+                100,
+                50,
             ));
         }
         let stats = router.model_stats("claude-haiku-3.5");
@@ -581,7 +649,9 @@ mod tests {
         // Record enough failures to cross threshold (25% of window=100 → 25 failures)
         for _ in 0..30 {
             router.record_feedback(RoutingFeedback::failure(
-                "claude-haiku-3.5".into(), 500, Some("timeout".into()),
+                "claude-haiku-3.5".into(),
+                500,
+                Some("timeout".into()),
             ));
         }
         let stats = router.model_stats("claude-haiku-3.5");
@@ -595,7 +665,9 @@ mod tests {
         // Penalize Haiku by recording many failures
         for _ in 0..30 {
             router.record_feedback(RoutingFeedback::failure(
-                "claude-haiku-3.5".into(), 500, Some("timeout".into()),
+                "claude-haiku-3.5".into(),
+                500,
+                Some("timeout".into()),
             ));
         }
 
@@ -615,7 +687,9 @@ mod tests {
         // First, trigger penalty with failures
         for _ in 0..30 {
             router.record_feedback(RoutingFeedback::failure(
-                "claude-haiku-3.5".into(), 500, Some("timeout".into()),
+                "claude-haiku-3.5".into(),
+                500,
+                Some("timeout".into()),
             ));
         }
         assert!(router.model_stats("claude-haiku-3.5").penalized);
@@ -623,7 +697,10 @@ mod tests {
         // Then recover with consecutive successes
         for _ in 0..RECOVERY_WINDOW {
             router.record_feedback(RoutingFeedback::success(
-                "claude-haiku-3.5".into(), 50, 100, 50,
+                "claude-haiku-3.5".into(),
+                50,
+                100,
+                50,
             ));
         }
 
@@ -637,7 +714,11 @@ mod tests {
         let mut router = ModelRouter::new(test_pool());
 
         router.record_feedback(RoutingFeedback::success("sonnet".into(), 100, 200, 100));
-        router.record_feedback(RoutingFeedback::failure("sonnet".into(), 500, Some("rate_limit".into())));
+        router.record_feedback(RoutingFeedback::failure(
+            "sonnet".into(),
+            500,
+            Some("rate_limit".into()),
+        ));
         router.record_feedback(RoutingFeedback::success("sonnet".into(), 150, 300, 150));
 
         let stats = router.model_stats("sonnet");
@@ -659,10 +740,13 @@ mod tests {
     async fn fallback_succeeds_on_first_try() {
         let router = ModelRouter::new(test_pool());
 
-        let decision = router.select_with_fallback("list files", 0, |model| async move {
-            assert_eq!(model, "claude-haiku-3.5");
-            Ok(())
-        }).await.unwrap();
+        let decision = router
+            .select_with_fallback("list files", 0, |model| async move {
+                assert_eq!(model, "claude-haiku-3.5");
+                Ok(())
+            })
+            .await
+            .unwrap();
 
         assert_eq!(decision.selected_model, "claude-haiku-3.5");
     }
@@ -672,16 +756,23 @@ mod tests {
         let router = ModelRouter::new(test_pool());
         let attempts = std::sync::atomic::AtomicUsize::new(0);
 
-        router.select_with_fallback("list files", 0, |_model| {
-            let n = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            async move {
-                if n < 1 {
-                    Err(RoutingFeedback::failure("model".into(), 500, Some("timeout".into())))
-                } else {
-                    Ok(())
+        router
+            .select_with_fallback("list files", 0, |_model| {
+                let n = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async move {
+                    if n < 1 {
+                        Err(RoutingFeedback::failure(
+                            "model".into(),
+                            500,
+                            Some("timeout".into()),
+                        ))
+                    } else {
+                        Ok(())
+                    }
                 }
-            }
-        }).await.unwrap();
+            })
+            .await
+            .unwrap();
 
         assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
@@ -690,9 +781,15 @@ mod tests {
     async fn fallback_exhausts_retries() {
         let router = ModelRouter::new(test_pool());
 
-        let result = router.select_with_fallback("list files", 0, |_model| async move {
-            Err(RoutingFeedback::failure("model".into(), 500, Some("crash".into())))
-        }).await;
+        let result = router
+            .select_with_fallback("list files", 0, |_model| async move {
+                Err(RoutingFeedback::failure(
+                    "model".into(),
+                    500,
+                    Some("crash".into()),
+                ))
+            })
+            .await;
 
         assert!(result.is_err());
         assert!(matches!(result, Err(RouterError::AllFallbacksExhausted)));

@@ -1,0 +1,12 @@
+{
+  "agent": "general-purpose",
+  "backend": "opencode",
+  "cwd": "/home/misscheta/code/ante-preview",
+  "elapsedMs": 19794,
+  "errorDetected": false,
+  "model": "opencode/deepseek-v4-flash-free",
+  "status": "exit status: 0",
+  "stderrBytes": 64,
+  "stdoutBytes": 27,
+  "success": true
+}

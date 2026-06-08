@@ -76,7 +76,12 @@ impl MemoryStore {
     }
 
     /// Add a memory entry.
-    pub fn add(&mut self, content: String, tags: String, project: String) -> Result<MemoryEntry, MemoryError> {
+    pub fn add(
+        &mut self,
+        content: String,
+        tags: String,
+        project: String,
+    ) -> Result<MemoryEntry, MemoryError> {
         let id = format!("mem-{}", ulid_timestamp());
         let timestamp = id[4..].to_string(); // use the hex timestamp
 
@@ -102,8 +107,7 @@ impl MemoryStore {
         self.entries
             .iter()
             .filter(|e| {
-                e.content.to_lowercase().contains(&lower)
-                    || e.tags.to_lowercase().contains(&lower)
+                e.content.to_lowercase().contains(&lower) || e.tags.to_lowercase().contains(&lower)
             })
             .collect()
     }
@@ -116,7 +120,7 @@ impl MemoryStore {
     ///   - Individual keyword match: +10 per occurrence
     ///   - Tag match: +30 per matching tag
     ///   - Keyword density bonus: if >20% of words match, 2x multiplier
-    pub fn search_ranked(&self, query: &str) -> Vec<RankedEntry> {
+    pub fn search_ranked(&self, query: &str) -> Vec<RankedEntry<'_>> {
         let query_lower = query.to_lowercase();
         let keywords: Vec<&str> = query_lower
             .split_whitespace()
@@ -169,10 +173,7 @@ impl MemoryStore {
                     }
                 }
 
-                Some(RankedEntry {
-                    entry,
-                    score,
-                })
+                Some(RankedEntry { entry, score })
             })
             .collect();
 
@@ -204,11 +205,10 @@ impl MemoryStore {
         let tag_filter = |e: &&MemoryEntry| -> bool {
             match tags {
                 Some(t) => {
-                    let tag_keywords: Vec<&str> =
-                        t.split(',').map(|s| s.trim()).collect();
-                    tag_keywords.iter().any(|kw| {
-                        e.tags.to_lowercase().contains(&kw.to_lowercase())
-                    })
+                    let tag_keywords: Vec<&str> = t.split(',').map(|s| s.trim()).collect();
+                    tag_keywords
+                        .iter()
+                        .any(|kw| e.tags.to_lowercase().contains(&kw.to_lowercase()))
                 }
                 None => true,
             }
@@ -223,10 +223,8 @@ impl MemoryStore {
         // Sort — ranked if query, otherwise by recency
         if let Some(query_str) = q {
             let ranked = self.search_ranked(query_str);
-            let ranked_ids: std::collections::HashSet<&str> = ranked
-                .iter()
-                .map(|r| r.entry.id.as_str())
-                .collect();
+            let ranked_ids: std::collections::HashSet<&str> =
+                ranked.iter().map(|r| r.entry.id.as_str()).collect();
             results.retain(|e| ranked_ids.contains(e.id.as_str()));
             results.sort_by(|a, b| {
                 let score_a = ranked
@@ -266,7 +264,10 @@ impl MemoryStore {
 
     /// Get all memories for a project.
     pub fn for_project(&self, project: &str) -> Vec<&MemoryEntry> {
-        self.entries.iter().filter(|e| e.project == project).collect()
+        self.entries
+            .iter()
+            .filter(|e| e.project == project)
+            .collect()
     }
 
     /// Total memory count.
@@ -309,7 +310,11 @@ mod tests {
         let mut store = MemoryStore::open(path, 20).unwrap();
 
         store
-            .add("Project config uses port 8080".into(), "config".into(), "myapp".into())
+            .add(
+                "Project config uses port 8080".into(),
+                "config".into(),
+                "myapp".into(),
+            )
             .unwrap();
 
         let results = store.search("port 8080");
@@ -323,8 +328,12 @@ mod tests {
         let path = tmp.path().join("memories.json");
         let mut store = MemoryStore::open(path, 5).unwrap();
 
-        store.add("old memory".into(), "".into(), "test".into()).unwrap();
-        store.add("recent memory".into(), "".into(), "test".into()).unwrap();
+        store
+            .add("old memory".into(), "".into(), "test".into())
+            .unwrap();
+        store
+            .add("recent memory".into(), "".into(), "test".into())
+            .unwrap();
 
         let context = store.get_context("test", 5);
         assert_eq!(context[0].content, "recent memory");
@@ -334,7 +343,9 @@ mod tests {
     fn search_is_case_insensitive() {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = MemoryStore::open(tmp.path().join("m.json"), 20).unwrap();
-        store.add("Project API key".into(), "secret".into(), "x".into()).unwrap();
+        store
+            .add("Project API key".into(), "secret".into(), "x".into())
+            .unwrap();
         assert_eq!(store.search("api").len(), 1);
         assert_eq!(store.search("API").len(), 1);
     }
@@ -346,7 +357,9 @@ mod tests {
 
         {
             let mut store = MemoryStore::open(path.clone(), 20).unwrap();
-            store.add("persistent data".into(), "test".into(), "p".into()).unwrap();
+            store
+                .add("persistent data".into(), "test".into(), "p".into())
+                .unwrap();
         }
 
         {
@@ -374,9 +387,27 @@ mod tests {
     fn search_ranked_returns_ranked_results() {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = MemoryStore::open(tmp.path().join("m.json"), 20).unwrap();
-        store.add("The API key is stored in config".into(), "config".into(), "p".into()).unwrap();
-        store.add("Use port 8080 for the server".into(), "network".into(), "p".into()).unwrap();
-        store.add("API documentation is in readme".into(), "docs".into(), "p".into()).unwrap();
+        store
+            .add(
+                "The API key is stored in config".into(),
+                "config".into(),
+                "p".into(),
+            )
+            .unwrap();
+        store
+            .add(
+                "Use port 8080 for the server".into(),
+                "network".into(),
+                "p".into(),
+            )
+            .unwrap();
+        store
+            .add(
+                "API documentation is in readme".into(),
+                "docs".into(),
+                "p".into(),
+            )
+            .unwrap();
 
         let ranked = store.search_ranked("API key");
         assert!(!ranked.is_empty());
@@ -396,8 +427,12 @@ mod tests {
     fn search_ranked_exact_phrase_highest() {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = MemoryStore::open(tmp.path().join("m.json"), 20).unwrap();
-        store.add("deployment config port 8080".into(), "".into(), "p".into()).unwrap();
-        store.add("port 8080 is the default".into(), "".into(), "p".into()).unwrap();
+        store
+            .add("deployment config port 8080".into(), "".into(), "p".into())
+            .unwrap();
+        store
+            .add("port 8080 is the default".into(), "".into(), "p".into())
+            .unwrap();
 
         let ranked = store.search_ranked("port 8080");
         assert!(!ranked.is_empty());
@@ -412,9 +447,13 @@ mod tests {
     fn query_filters_by_project() {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = MemoryStore::open(tmp.path().join("m.json"), 20).unwrap();
-        store.add("alpha".into(), "".into(), "proj1".into()).unwrap();
+        store
+            .add("alpha".into(), "".into(), "proj1".into())
+            .unwrap();
         store.add("beta".into(), "".into(), "proj2".into()).unwrap();
-        store.add("gamma".into(), "".into(), "proj1".into()).unwrap();
+        store
+            .add("gamma".into(), "".into(), "proj1".into())
+            .unwrap();
 
         let results = store.query(None, Some("proj1"), None, 10);
         assert_eq!(results.len(), 2);
@@ -426,8 +465,12 @@ mod tests {
     fn query_filters_by_tags() {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = MemoryStore::open(tmp.path().join("m.json"), 20).unwrap();
-        store.add("memory one".into(), "database,config".into(), "p".into()).unwrap();
-        store.add("memory two".into(), "network".into(), "p".into()).unwrap();
+        store
+            .add("memory one".into(), "database,config".into(), "p".into())
+            .unwrap();
+        store
+            .add("memory two".into(), "network".into(), "p".into())
+            .unwrap();
 
         let results = store.query(None, None, Some("database"), 10);
         assert_eq!(results.len(), 1);
@@ -438,9 +481,19 @@ mod tests {
     fn query_with_keyword_and_tag() {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = MemoryStore::open(tmp.path().join("m.json"), 20).unwrap();
-        store.add("server config port 8080".into(), "config".into(), "proj".into()).unwrap();
-        store.add("network setup".into(), "network".into(), "proj".into()).unwrap();
-        store.add("port mapping".into(), "config".into(), "other".into()).unwrap();
+        store
+            .add(
+                "server config port 8080".into(),
+                "config".into(),
+                "proj".into(),
+            )
+            .unwrap();
+        store
+            .add("network setup".into(), "network".into(), "proj".into())
+            .unwrap();
+        store
+            .add("port mapping".into(), "config".into(), "other".into())
+            .unwrap();
 
         // Filter by project + keyword
         let results = store.query(Some("port"), Some("proj"), None, 10);
@@ -453,7 +506,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = MemoryStore::open(tmp.path().join("m.json"), 20).unwrap();
         for i in 0..5 {
-            store.add(format!("memory {i}"), "test".into(), "p".into()).unwrap();
+            store
+                .add(format!("memory {i}"), "test".into(), "p".into())
+                .unwrap();
         }
 
         let results = store.query(None, Some("p"), None, 3);

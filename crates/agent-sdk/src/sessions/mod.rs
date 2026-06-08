@@ -24,7 +24,7 @@
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -54,6 +54,10 @@ pub fn safe_name_to_path(name: &str) -> Option<PathBuf> {
     let stripped = name.strip_prefix("--")?.strip_suffix("--")?;
     let path_str = format!("/{}", stripped.replace('-', "/"));
     Some(PathBuf::from(path_str))
+}
+
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -336,11 +340,11 @@ impl SessionManager {
             total_tokens: 0,
         };
 
-        *self.writer.lock().unwrap() = Some(SessionFileWriter {
+        *lock_or_recover(&self.writer) = Some(SessionFileWriter {
             file,
             path: file_path,
         });
-        *self.active.lock().unwrap() = Some(active);
+        *lock_or_recover(&self.active) = Some(active);
 
         Ok(session_id)
     }
@@ -394,7 +398,7 @@ impl SessionManager {
         };
         self.write_line(&serde_json::to_string(&SessionLine::ModelChange(entry))?)?;
         // Update active session model info
-        if let Some(ref active) = *self.active.lock().unwrap() {
+        if let Some(ref active) = *lock_or_recover(&self.active) {
             let mut active = active.clone();
             active.provider = Some(provider.into());
             active.model_id = Some(model_id.into());
@@ -407,7 +411,7 @@ impl SessionManager {
     /// End the active session, finalize the index entry, and close the file.
     pub fn end(&self, total_tokens: u64) -> io::Result<()> {
         let active = {
-            let guard = self.active.lock().unwrap();
+            let guard = lock_or_recover(&self.active);
             guard.clone()
         };
 
@@ -432,15 +436,15 @@ impl SessionManager {
         }
 
         // Close the file
-        *self.writer.lock().unwrap() = None;
-        *self.active.lock().unwrap() = None;
+        *lock_or_recover(&self.writer) = None;
+        *lock_or_recover(&self.active) = None;
 
         Ok(())
     }
 
     /// Track token usage incrementally on the active session.
     pub fn add_tokens(&self, tokens: u64) {
-        if let Some(ref mut active) = *self.active.lock().unwrap() {
+        if let Some(ref mut active) = *lock_or_recover(&self.active) {
             active.total_tokens += tokens;
             active.message_count += 1;
         }
@@ -553,23 +557,20 @@ impl SessionManager {
                 Value::Array(arr) => {
                     let parts: Vec<String> = arr
                         .iter()
-                        .filter_map(|block| {
-                            match block.get("type").and_then(|t| t.as_str()) {
-                                Some("text") => block
-                                    .get("text")
-                                    .and_then(|t| t.as_str())
-                                    .map(String::from),
-                                Some("thinking") => block
-                                    .get("thinking")
-                                    .and_then(|t| t.as_str())
-                                    .map(|t| format!("[thinking] {t}")),
-                                Some("toolCall") => {
-                                    let name =
-                                        block.get("name").and_then(|n| n.as_str()).unwrap_or("?");
-                                    Some(format!("[tool: {name}]"))
-                                }
-                                _ => None,
+                        .filter_map(|block| match block.get("type").and_then(|t| t.as_str()) {
+                            Some("text") => {
+                                block.get("text").and_then(|t| t.as_str()).map(String::from)
                             }
+                            Some("thinking") => block
+                                .get("thinking")
+                                .and_then(|t| t.as_str())
+                                .map(|t| format!("[thinking] {t}")),
+                            Some("toolCall") => {
+                                let name =
+                                    block.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+                                Some(format!("[tool: {name}]"))
+                            }
+                            _ => None,
                         })
                         .collect();
                     parts.join("\n")
@@ -625,7 +626,7 @@ impl SessionManager {
         self.write_line(&line)?;
 
         // Bump message count on active session
-        if let Some(ref mut active) = *self.active.lock().unwrap() {
+        if let Some(ref mut active) = *lock_or_recover(&self.active) {
             active.message_count += 1;
         }
 
@@ -633,7 +634,7 @@ impl SessionManager {
     }
 
     fn write_line(&self, json_line: &str) -> io::Result<()> {
-        let guard = self.writer.lock().unwrap();
+        let guard = lock_or_recover(&self.writer);
         if let Some(ref writer) = *guard {
             let mut file = &writer.file;
             writeln!(file, "{json_line}")?;
@@ -644,14 +645,12 @@ impl SessionManager {
 
     /// Check if a session is currently active.
     pub fn is_active(&self) -> bool {
-        self.active.lock().unwrap().is_some()
+        lock_or_recover(&self.active).is_some()
     }
 
     /// Get the active session ID, if any.
     pub fn active_session_id(&self) -> Option<String> {
-        self.active
-            .lock()
-            .unwrap()
+        lock_or_recover(&self.active)
             .as_ref()
             .map(|a| a.session_id.clone())
     }
@@ -686,7 +685,6 @@ fn iso_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::BufRead;
 
     #[test]
     fn path_to_safe_name_converts() {
@@ -746,7 +744,13 @@ mod tests {
             None,
         )
         .unwrap();
-        mgr.record_tool_result("call-1", "read", serde_json::json!([{"type": "text", "text": "file content"}]), false).unwrap();
+        mgr.record_tool_result(
+            "call-1",
+            "read",
+            serde_json::json!([{"type": "text", "text": "file content"}]),
+            false,
+        )
+        .unwrap();
         mgr.end(150).unwrap();
 
         // Read back and verify
@@ -839,7 +843,9 @@ mod tests {
     fn empty_recovery_for_no_session() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = SessionManager::new(dir.path().to_path_buf());
-        let result = mgr.recover_context(Path::new("/home/user/other"), 10).unwrap();
+        let result = mgr
+            .recover_context(Path::new("/home/user/other"), 10)
+            .unwrap();
         assert!(result.is_none());
     }
 

@@ -4,8 +4,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ante_protocol_shape::event::EventType;
 use ante_protocol_shape::Settings;
+use ante_protocol_shape::event::EventType;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -41,6 +41,7 @@ pub fn load_settings() -> Result<Settings, LoadSettingsError> {
 /// Load settings from a specific path, with optional Claude Code merge.
 pub fn load_settings_from(path: &Path) -> Result<Settings, LoadSettingsError> {
     let mut settings: Settings = read_settings_file(path)?;
+    normalize_legacy_paths(&mut settings);
 
     if settings.claude_compat.merge_claude_settings {
         let claude_path = settings
@@ -66,6 +67,37 @@ pub fn load_settings_from(path: &Path) -> Result<Settings, LoadSettingsError> {
     }
 
     Ok(settings)
+}
+
+fn normalize_legacy_paths(settings: &mut Settings) {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let Some(home) = home else {
+        return;
+    };
+
+    let legacy_memory = home.join(".ante").join("memory").join("ante-memory.db");
+    let wiki_memory_repo = home.join("code").join("wiki-memory");
+    let wiki_memory_db = wiki_memory_repo
+        .join("wiki")
+        .join(".meta")
+        .join("ante-memory.db");
+    if settings.memory.db_path == legacy_memory {
+        settings.memory.db_path = if wiki_memory_repo.exists() {
+            wiki_memory_db.clone()
+        } else {
+            home.join("ai-wiki").join(".meta").join("ante-memory.db")
+        };
+    }
+
+    if settings.memory.db_path == PathBuf::from("~/.ante/memory/ante-memory.db")
+        || settings.memory.db_path == PathBuf::from("~/ai-wiki/.meta/ante-memory.db")
+    {
+        settings.memory.db_path = if wiki_memory_repo.exists() {
+            wiki_memory_db
+        } else {
+            PathBuf::from("~/ai-wiki/.meta/ante-memory.db")
+        };
+    }
 }
 
 fn default_ante_dir() -> PathBuf {
@@ -102,18 +134,15 @@ fn dirs_or_fallback() -> PathBuf {
     }
 }
 
-fn read_settings_file<T: serde::de::DeserializeOwned>(
-    path: &Path,
-) -> Result<T, LoadSettingsError> {
+fn read_settings_file<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, LoadSettingsError> {
     if !path.exists() {
         return Err(LoadSettingsError::NotFound(path.to_path_buf()));
     }
 
-    let content =
-        fs::read_to_string(path).map_err(|source| LoadSettingsError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    let content = fs::read_to_string(path).map_err(|source| LoadSettingsError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
 
     serde_json::from_str(&content).map_err(|source| LoadSettingsError::Parse {
         path: path.to_path_buf(),
@@ -126,10 +155,7 @@ fn read_settings_file<T: serde::de::DeserializeOwned>(
 /// This translates Claude Code event names to Ante event types when
 /// `claude_compat.translate_event_names` is true.
 fn merge_claude_hooks(ante: &mut Settings, claude: &serde_json::Value) {
-    use ante_protocol_shape::{
-        HookDefinition, HookMatchRule,
-        event::EventType,
-    };
+    use ante_protocol_shape::{HookDefinition, HookMatchRule, event::EventType};
 
     // Claude Code hook config lives under `hooks.rules[].hooks`
     let Some(rules) = claude
@@ -182,9 +208,7 @@ fn merge_claude_hooks(ante: &mut Settings, claude: &serde_json::Value) {
                                                 .collect()
                                         })
                                         .unwrap_or_default(),
-                                    timeout_ms: h
-                                        .get("timeoutMs")
-                                        .and_then(|v| v.as_u64()),
+                                    timeout_ms: h.get("timeoutMs").and_then(|v| v.as_u64()),
                                 }),
                                 "prompt" => Some(HookDefinition::Prompt {
                                     prompt: h.get("prompt")?.as_str()?.to_string(),
@@ -192,21 +216,17 @@ fn merge_claude_hooks(ante: &mut Settings, claude: &serde_json::Value) {
                                         .get("model")
                                         .and_then(|v| v.as_str().map(String::from)),
                                 }),
-                                "mcp_tool" => {
-                                    Some(HookDefinition::McpTool {
-                                        server: h.get("server")?.as_str()?.to_string(),
-                                        tool: h.get("tool")?.as_str()?.to_string(),
-                                        args: h
-                                            .get("args")
-                                            .and_then(|a| a.as_object())
-                                            .map(|o| {
-                                                o.iter()
-                                                    .map(|(k, v)| (k.clone(), v.clone()))
-                                                    .collect()
-                                            })
-                                            .unwrap_or_default(),
-                                    })
-                                }
+                                "mcp_tool" => Some(HookDefinition::McpTool {
+                                    server: h.get("server")?.as_str()?.to_string(),
+                                    tool: h.get("tool")?.as_str()?.to_string(),
+                                    args: h
+                                        .get("args")
+                                        .and_then(|a| a.as_object())
+                                        .map(|o| {
+                                            o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                                        })
+                                        .unwrap_or_default(),
+                                }),
                                 _ => None,
                             }
                         })
@@ -214,7 +234,11 @@ fn merge_claude_hooks(ante: &mut Settings, claude: &serde_json::Value) {
                 })
                 .unwrap_or_default();
 
-            Some(HookMatchRule { event_types, tool_name_pattern, hooks })
+            Some(HookMatchRule {
+                event_types,
+                tool_name_pattern,
+                hooks,
+            })
         })
         .collect();
 

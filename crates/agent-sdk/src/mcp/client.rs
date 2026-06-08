@@ -6,8 +6,8 @@
 //! MCP spec: https://spec.modelcontextprotocol.io/
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -50,15 +50,6 @@ pub enum McpClientError {
 }
 
 // ─── JSON-RPC types ─────────────────────────────────────────────────────────
-
-#[derive(Debug, Serialize, Deserialize)]
-struct JsonRpcRequest {
-    jsonrpc: String,
-    id: u64,
-    method: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    params: Option<Value>,
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct JsonRpcResponse {
@@ -107,9 +98,7 @@ pub enum McpContentItem {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "resource")]
-    Resource {
-        resource: McpResourceContent,
-    },
+    Resource { resource: McpResourceContent },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,7 +183,14 @@ impl McpClient {
         command: &str,
         args: &[String],
     ) -> Result<Self, McpClientError> {
-        Self::connect_with_config(name, command, args, ReconnectConfig::default(), TimeoutConfig::default()).await
+        Self::connect_with_config(
+            name,
+            command,
+            args,
+            ReconnectConfig::default(),
+            TimeoutConfig::default(),
+        )
+        .await
     }
 
     /// Spawn and handshake with configurable reconnection and timeouts.
@@ -214,12 +210,14 @@ impl McpClient {
             .spawn()
             .map_err(McpClientError::Spawn)?;
 
-        let stdin = child.stdin.take().ok_or(McpClientError::Protocol(
-            "failed to acquire stdin".into(),
-        ))?;
-        let stdout = child.stdout.take().ok_or(McpClientError::Protocol(
-            "failed to acquire stdout".into(),
-        ))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or(McpClientError::Protocol("failed to acquire stdin".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or(McpClientError::Protocol("failed to acquire stdout".into()))?;
 
         let mut client = McpClient {
             name: name.to_string(),
@@ -289,9 +287,9 @@ impl McpClient {
             )));
         }
 
-        let result = parsed
-            .result
-            .ok_or(McpClientError::Handshake("no result in initialize response".into()))?;
+        let result = parsed.result.ok_or(McpClientError::Handshake(
+            "no result in initialize response".into(),
+        ))?;
 
         let capabilities = result
             .get("capabilities")
@@ -375,7 +373,9 @@ impl McpClient {
 
             let response = self.read_line().await?;
             Ok::<_, McpClientError>(response)
-        }).await {
+        })
+        .await
+        {
             Ok(Ok(response)) => {
                 let parsed: JsonRpcResponse = serde_json::from_str(&response)?;
 
@@ -455,14 +455,12 @@ impl McpClient {
             .spawn()
             .map_err(McpClientError::Spawn)?;
 
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or(McpClientError::Protocol("failed to acquire stdin on reconnect".into()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or(McpClientError::Protocol("failed to acquire stdout on reconnect".into()))?;
+        let stdin = child.stdin.take().ok_or(McpClientError::Protocol(
+            "failed to acquire stdin on reconnect".into(),
+        ))?;
+        let stdout = child.stdout.take().ok_or(McpClientError::Protocol(
+            "failed to acquire stdout on reconnect".into(),
+        ))?;
 
         // Replace internals
         self.child = Some(child);
@@ -613,13 +611,10 @@ for line in sys.stdin:
         let script_path = tmp.path().join("mcp_test_server.py");
         std::fs::write(&script_path, server_script).expect("write script");
 
-        let mut client = McpClient::connect(
-            "test",
-            "python3",
-            &[script_path.display().to_string()],
-        )
-        .await
-        .expect("connect");
+        let mut client =
+            McpClient::connect("test", "python3", &[script_path.display().to_string()])
+                .await
+                .expect("connect");
 
         assert!(client.is_connected());
         assert!(client.server_version.is_some());

@@ -1,0 +1,80 @@
+{
+  "hooks": {
+    "rules": [
+      {
+        "eventTypes": [
+          "pre_tool_use"
+        ],
+        "toolNamePattern": "Bash*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/misscheta/code/ante-preview/ante-test/demo-home/.ante/hooks/block-danger.sh",
+            "args": [],
+            "timeout_ms": 5000
+          }
+        ]
+      },
+      {
+        "eventTypes": [
+          "pre_compact"
+        ],
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "/home/misscheta/code/ante-preview/ante-test/demo-home/.ante/hooks/pre_compact.py"
+            ],
+            "timeout_ms": 10000
+          }
+        ]
+      },
+      {
+        "eventTypes": [
+          "session_end"
+        ],
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "/home/misscheta/code/ante-preview/ante-test/demo-home/.ante/hooks/session_end.py"
+            ],
+            "timeout_ms": 10000
+          }
+        ]
+      }
+    ],
+    "maxDepth": 3,
+    "defaultTimeoutMs": 30000
+  },
+  "mcpServers": [],
+  "agents": {
+    "directory": "/home/misscheta/code/ante-preview/ante-test/demo-home/.ante/agents",
+    "maxConcurrent": 4
+  },
+  "memory": {
+    "dbPath": "/home/misscheta/code/ante-preview/ante-test/demo-home/ai-wiki/.meta/ante-memory.db",
+    "maxContextMemories": 20,
+    "autoIndex": true
+  },
+  "modelPool": [],
+  "contextBudget": {
+    "maxTokens": 200000,
+    "maxCostUsd": 1.0,
+    "warnAt": 0.8
+  },
+  "claudeCompat": {
+    "mergeClaudeSettings": true,
+    "translateEventNames": true,
+    "writeClaudeSettings": false
+  },
+  "sensitiveTools": [
+    "Bash",
+    "Write",
+    "Execute"
+  ],
+  "extensibilityEnabled": true,
+  "anteDir": "/home/misscheta/code/ante-preview/ante-test/demo-home/.ante"
+}

@@ -139,10 +139,10 @@ pub async fn execute_task_graph(
     _agents: &AgentRegistry,
     budget: Option<&BudgetTracker>,
     runner: impl Fn(TaskContext) -> Pin<Box<dyn Future<Output = TaskResult> + Send>>
-        + Clone
-        + Send
-        + Sync
-        + 'static,
+    + Clone
+    + Send
+    + Sync
+    + 'static,
 ) -> Vec<TaskResult> {
     // ── 1. Group tasks by topological level ────────────────────────────
     let levels = topological_levels(&graph.tasks);
@@ -151,8 +151,7 @@ pub async fn execute_task_graph(
 
     // ── 2. Execute level by level (parallel within a level) ────────────
     for level in &levels {
-        let mut level_futures: Vec<Pin<Box<dyn Future<Output = TaskResult> + Send>>> =
-            Vec::new();
+        let mut level_futures: Vec<Pin<Box<dyn Future<Output = TaskResult> + Send>>> = Vec::new();
 
         for task_id in level {
             if let Some(task) = graph.tasks.iter().find(|t| t.id == *task_id) {
@@ -160,9 +159,7 @@ pub async fn execute_task_graph(
                 let dep_results: HashMap<String, TaskResult> = task
                     .dependencies
                     .iter()
-                    .filter_map(|dep_id| {
-                        results.get(dep_id).map(|r| (dep_id.clone(), r.clone()))
-                    })
+                    .filter_map(|dep_id| results.get(dep_id).map(|r| (dep_id.clone(), r.clone())))
                     .collect();
 
                 let ctx = TaskContext::from_task(task, dep_results);
@@ -218,10 +215,7 @@ fn topological_levels(tasks: &[TaskNode]) -> Vec<Vec<String>> {
         // Phase 1: find tasks whose dependencies are all in `placed`
         // (placed only contains tasks from earlier iterations).
         for task in remaining.drain(..) {
-            let all_deps_placed = task
-                .dependencies
-                .iter()
-                .all(|d| placed.contains(d));
+            let all_deps_placed = task.dependencies.iter().all(|d| placed.contains(d));
             if all_deps_placed {
                 level.push(task.id.clone());
             } else {
@@ -332,15 +326,12 @@ mod tests {
     }
 
     fn idle_runner() -> impl Fn(TaskContext) -> Pin<Box<dyn Future<Output = TaskResult> + Send>>
-        + Clone
-        + Send
-        + Sync
-        + 'static
-    {
+    + Clone
+    + Send
+    + Sync
+    + 'static {
         |ctx: TaskContext| {
-            Box::pin(async move {
-                TaskResult::new(ctx.task_id, ctx.task_description, None)
-            })
+            Box::pin(async move { TaskResult::new(ctx.task_id, ctx.task_description, None) })
         }
     }
 
@@ -501,7 +492,7 @@ mod tests {
         assert_eq!(results.len(), 2);
 
         // task-1 should have 0 dependency results
-        let t1 = results.iter().find(|r| r.task_id == "task-1").unwrap();
+        let _t1 = results.iter().find(|r| r.task_id == "task-1").unwrap();
         // task-2 should have 1 dependency result in context
         let t2 = results.iter().find(|r| r.task_id == "task-2").unwrap();
         assert!(t2.description.contains("depends on first"));
@@ -517,20 +508,15 @@ mod tests {
 
         // Use a runner that records context info so we can verify
         // dependency propagation.
-        let results = execute_task_graph(
-            &graph,
-            &agents,
-            None,
-            |ctx: TaskContext| {
-                let dep_count = ctx.dependency_results.len();
-                let id = ctx.task_id.clone();
-                Box::pin(async move {
-                    let mut r = TaskResult::new(id, format!("{} deps", dep_count), None);
-                    r.output = format!("{} dependencies", dep_count);
-                    r
-                })
-            },
-        )
+        let results = execute_task_graph(&graph, &agents, None, |ctx: TaskContext| {
+            let dep_count = ctx.dependency_results.len();
+            let id = ctx.task_id.clone();
+            Box::pin(async move {
+                let mut r = TaskResult::new(id, format!("{} deps", dep_count), None);
+                r.output = format!("{} dependencies", dep_count);
+                r
+            })
+        })
         .await;
 
         assert_eq!(results.len(), 2);
@@ -568,8 +554,7 @@ mod tests {
         let agents = empty_agents();
         let graph = single_node_graph();
 
-        let results =
-            execute_task_graph(&graph, &agents, Some(&budget), idle_runner()).await;
+        let results = execute_task_graph(&graph, &agents, Some(&budget), idle_runner()).await;
         assert_eq!(results.len(), 1);
         // Budget overhead cost should be recorded for the task
         assert!(budget.total_cost_usd() > 0.001);

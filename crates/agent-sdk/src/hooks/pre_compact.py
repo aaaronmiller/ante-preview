@@ -7,7 +7,7 @@ Receives a PreCompact event payload on stdin (CompactPayload fields):
   - current_cost_usd: current session cost
   - budget_cost_usd: cost limit (optional)
 
-Writes a memory entry to ~/.ante/memory/ante-memory.db and logs to
+Writes a memory entry to ~/ai-wiki/.meta/ante-memory.db and logs to
 ~/.ante/run/pre_compact.log.
 
 Always returns {"type":"allow"} — this hook is observational only.
@@ -31,17 +31,34 @@ def ante_dir() -> str:
     return os.path.expanduser("~/.ante")
 
 
+def memory_db_path() -> str:
+    """Locate the shared wiki-memory-backed Ante memory store."""
+    explicit = os.environ.get("ANTE_MEMORY_DB", "")
+    if explicit:
+        return os.path.expanduser(explicit)
+    ai_wiki = os.environ.get("AI_WIKI_DIR", "")
+    if ai_wiki:
+        return os.path.join(os.path.expanduser(ai_wiki), ".meta", "ante-memory.db")
+    home = os.environ.get("HOME", "")
+    if home:
+        wiki_memory = os.path.join(home, "code", "wiki-memory")
+        if os.path.exists(wiki_memory):
+            return os.path.join(wiki_memory, "wiki", ".meta", "ante-memory.db")
+        return os.path.join(home, "ai-wiki", ".meta", "ante-memory.db")
+    return os.path.expanduser("~/ai-wiki/.meta/ante-memory.db")
+
+
 def ulid_timestamp() -> str:
     """Nanosecond-precision hex timestamp (ULID-compatible)."""
     ns = time.time_ns()
     return format(ns, "016x")
 
 
-def append_memory_entry(ante: str, entry: dict) -> None:
+def append_memory_entry(entry: dict) -> None:
     """Append a MemoryEntry to the ante-memory.db JSON array file."""
-    mem_dir = os.path.join(ante, "memory")
+    db_path = memory_db_path()
+    mem_dir = os.path.dirname(db_path)
     os.makedirs(mem_dir, exist_ok=True)
-    db_path = os.path.join(mem_dir, "ante-memory.db")
 
     entries = []
     if os.path.exists(db_path):
@@ -114,7 +131,7 @@ def main() -> None:
     }
 
     # Append to memory store and run log
-    append_memory_entry(ante, entry)
+    append_memory_entry(entry)
     append_run_log(ante, event)
 
     # Always allow

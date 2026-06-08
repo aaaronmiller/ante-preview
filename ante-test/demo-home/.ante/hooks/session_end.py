@@ -42,9 +42,6 @@ def memory_db_path() -> str:
         return os.path.join(os.path.expanduser(ai_wiki), ".meta", "ante-memory.db")
     home = os.environ.get("HOME", "")
     if home:
-        wiki_memory = os.path.join(home, "code", "wiki-memory")
-        if os.path.exists(wiki_memory):
-            return os.path.join(wiki_memory, "wiki", ".meta", "ante-memory.db")
         return os.path.join(home, "ai-wiki", ".meta", "ante-memory.db")
     return os.path.expanduser("~/ai-wiki/.meta/ante-memory.db")
 
