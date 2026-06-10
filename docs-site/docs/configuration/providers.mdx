@@ -71,7 +71,7 @@ ante --provider together --model moonshotai/Kimi-K2-Instruct
 
 ### Add a local provider with no auth
 
-Omit `auth` for a provider that needs no key, and leave `preferred_models` off to make it a wildcard that accepts any model id — handy for a local server like Ollama where the available models change as you pull them:
+Omit `auth` for a provider that needs no key, and leave `preferred_models` off when the provider has no stable picker/default model list — handy for a local server like Ollama where the available models change as you pull them. You can still pass any model id explicitly with `--provider` and `--model`:
 
 ```json
 {

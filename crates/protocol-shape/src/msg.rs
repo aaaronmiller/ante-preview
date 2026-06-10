@@ -24,7 +24,7 @@ pub struct OpMsg {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum Op {
-    StartSession(SessionConfig),
+    StartSession(SessionOverrides),
     UpdateSession(SessionUpdate),
     Interrupt,
     UserInput(String),
@@ -118,7 +118,13 @@ pub enum TurnEndStatus {
         reason: Option<String>,
     },
     Error {
-        message: String,
+        /// One-line summary. For a classified LLM failure this is the semantic
+        /// error kind, e.g. "rate limited"; otherwise the top of the error chain.
+        headline: String,
+        /// Expanded cause shown as indented child rows beneath the headline,
+        /// e.g. ["HTTP 400 Bad Request", "<server-provided message>"]. May be
+        /// empty when there is nothing useful to add.
+        details: Vec<String>,
     },
 }
 
@@ -150,6 +156,9 @@ pub enum ReviewDecision {
     Accept,
     Skip,
     AcceptForSession,
+    /// Approve and persist an allow rule to settings.json so the same call is
+    /// auto-approved across future sessions ("always allow").
+    AcceptAlways,
     Abort,
 }
 
@@ -224,16 +233,32 @@ pub struct McpToolParam {
     pub description: String,
 }
 
+/// A patch of session overrides produced by every caller (CLI, TUI, gateway,
+/// external `serve` clients). `None` means "leave unchanged" for every field —
+/// there is exactly one meaning, regardless of who built the value.
+///
+/// This is the wire payload of [`Op::StartSession`]. The daemon folds it onto a
+/// resolved `SessionConfig` (an internal type in `ante::core::session_config`)
+/// to produce the configuration a session actually runs with.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SessionConfig {
-    pub model: String,
-    pub provider: String,
+pub struct SessionOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<PermissionMode>,
-    pub streaming: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub streaming: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub append_system_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disallowed_tools: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Thinking>,
@@ -301,6 +326,14 @@ pub struct ModelSpec {
     pub context_limit: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Thinking>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support_vision: Option<bool>,
+}
+
+impl ModelSpec {
+    pub fn support_vision(&self) -> bool {
+        self.support_vision.unwrap_or(true)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Copy, PartialEq, Eq, Hash)]
@@ -397,6 +430,7 @@ mod tests {
             stop_sequences: None,
             context_limit: None,
             thinking: None,
+            support_vision: None,
         }
     }
 

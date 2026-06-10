@@ -33,6 +33,10 @@ Stores user preferences. All fields are optional.
   "provider": "anthropic",
   "theme": "default",
   "policy": "default",
+  "permissions": {
+    "allow": ["Bash(npm run *)"],
+    "deny": ["Bash(rm *)"]
+  },
   "channel": "stable",
   "has_completed_onboarding": true,
   "status_line": ["model-name", "current-dir"],

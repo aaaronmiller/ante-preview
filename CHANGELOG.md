@@ -31,65 +31,76 @@
 - Fixed session manager mutex handling to recover from poisoned locks instead of panicking.
 - Status bar token/cost double-counting: `add_tokens` was receiving cumulative `budget_snapshot` values each turn, causing exponential over-reporting. Changed callers to `set_usage()` which replaces rather than accumulates.
 - Removed unused status bar code: `C_WHITE`, `BOLD`, `bold()`, `set_color()`, `set_max_context()`, `set_max_cost()`, `add_tokens()`, `track_tool_failure()`, `set_subagent_stats()`, `set_risk_level()` — left over from pre-redesign API
-- TCP transport for inter-agent broker: `Transport::Tcp` with `Transport::tcp()`, `local_address()`, full test coverage
-- `--hitl-mode` and `--risk-threshold` CLI arguments for `ante query` and `ante repl` commands
-- `RiskLevel::from_str()` for string-to-enum parsing in CLI arg wiring
-- Internal MCP server (`ante internal-mcp-server`) providing diagram/todo as MCP agent tools, auto-registered on startup
-- Sub-agent hook variant (`HookDefinition::SubAgent`) with callback-based execution and task template formatting
-- HITL `ApprovalDecision::Modify` variant with `approve_with_modifications()` channel wiring
-- HITL `HitlMode` enum (`PerRequest`, `BatchRiskThreshold`, `ApproveAll`) with `from_str`, `needs_approval`
-- HITL `RiskLevel` now implements `Ord`/`PartialOrd` for threshold-based auto-approval
-- Pending approval channel wiring: `request_approval` creates oneshot channel, `wait_for_approval` awaits decision with timeout
-- Hook-matching O(1) cache in `HookRegistry` via `RefCell<HashMap<MatchCacheKey, Vec<usize>>>`
-- Model-router feedback loop: `RoutingFeedback` with failure tracking, capability penalty, automatic recovery
-- Model fallback chain: `select_with_fallback()` tries candidates in cost order up to `FALLBACK_MAX_RETRIES`
-- MCP tool hook executor: Injects event payload as `"event"` key plus top-level `event_type`/`tool_name`
-- Prompt hook executor: Template formatting with `{event_type}`/`{event_json}` placeholders, robust response parser
-- Dynamic sub-agent dispatcher: Topological-level scheduling with `join_all` concurrent execution, owned `TaskContext`
-- `InvokeLlm`, `InvokeMcp`, `InvokeSubAgent` callback type aliases stored in `EventBus`
-- `HookExecError::Prompt`, `HookExecError::McpTool`, `HookExecError::SubAgent` error variants
-- Hook system: Event types, payloads, decision pipeline, hook registry (PreToolUse/PostToolUse/PermissionRequest)
-- Command hooks: Shell script hooks with JSON event piping, timeout, exit code mapping
-- Prompt hooks: LLM-based hook executor stub with response parsing
-- Settings system: `~/.ante/settings.json` loader with Claude Code compat merge
-- Context budget tracker: Token/cost tracking with warnings and limits
-- First-run init: Creates `~/.ante/` directory structure, installs blocklist hook, writes default settings
-- Blocklist hook: Shell script blocking dangerous patterns (`rm -rf /`, `sudo`, `chmod 777`, `dd if=` etc.)
-- MCP client: Full stdio transport with JSON-RPC 2.0, initialize handshake, tools/list, tools/call
-- MCP tool registry: `McpToolRegistry` with `mcp__{server}__{tool}` namespace and `McpToolId` parsing
-- MCP integration test: Python MCP server fixture with tool discovery/invocation verification
-- Sub-agent loader: YAML frontmatter parser (no dep), keyword-overlap scoring, `AgentRegistry`
-- Task decomposer: Request splitting on conjunctions with sequential dependency chaining
-- Task dispatcher: `execute_task_graph` stub with result synthesis formatter
-- Memory store: JSON file-backed `MemoryStore` with add, search, get_context; nanosecond ULID timestamps
-- Memory server: `MemoryServer` wrapper with MCP-like methods
-- Diagram renderer: Mermaid flowchart/sequence → ASCII (box-drawing chars, arrow symbols)
-- Todo list: JSON-backed `TodoList` with add/complete/list/clear_done/delete, sequential IDs
-- Model router: Rule-based classifier with capability/cost scoring, `ModelPoolEntry`, 8 unit tests
-- HITL approval: `ApprovalManager` with 5-tier risk classification, pending queue, approve/deny/timeout
-- 95 unit tests across all new modules
-- Integration binary: `crates/ante/` — merges all agent-sdk components into a single binary crate
-- Agent context: `AgentContext` struct with EventBus, HookRegistry, McpToolRegistry, ModelRouter, MemoryStore, ApprovalManager, BudgetTracker
-- Claude CLI integration: `Claude::connect()` with options for model, system prompt, permission mode, allowed/disallowed tools
-- Event wiring: SessionStart, SessionEnd, UserPromptSubmit, PermissionRequest events emitted through EventBus in agent loop
-- HITL approval loop: `check_hitl()` intercepts ControlRequest messages, classifies risk, blocks for user approve/deny
-- Status bar: `StatusBar` with context usage bar, model name, session cost, elapsed time, MCP/memory/agent counts, HITL risk level
-- ASCII startup banner: Geometric "ANTE" logo with feature summary grid showing hooks/MCP/agents/memories
-- Double-row status mode: Two-line layout like gemini-cli's refreshed UX (model + context on row 1, metrics on row 2)
-- Usage docs: README section with full command reference, status bar field descriptions, REPL commands, configuration guide
-- Model routing: `ModelRouter::select()` called on both REPL and query modes, selected model passed to ClaudeOptions
-- Memory context injection: `get_memory_context()` retrieves project-scoped memories, injected into append_system_prompt
-- MCP server connection: `connect_mcp_servers()` registers configured MCP servers, discovers tools into registry
-- CLI commands: `ante repl`, `ante query`, `ante todo`, `ante diagram` subcommands with clap-derived parsing
-- Protocol-shape ↔ SDK type conversion: `ModelPoolEntry`, `RiskLevel` mappings between crate types
-- All 142 tests passing across 3 crates (95 agent-sdk + 24 protocol-shape + 23 exec)
-- Hook stdin pipe fix: Explicit `drop(stdin)` after `shutdown()` in `run_command_hook` to prevent child from hanging on open pipe
-- Hook system end-to-end verified: SessionStart, PreUserPromptSubmit, PostUserPromptSubmit events fire in query mode, blocklist hook denies dangerous Bash commands
-- Hook audit: Added `pre_compact.py` + `session_end.py` hook scripts for memory/program usage tracking
-- Hook registration: `init.rs` now installs 3 hook scripts (blocklist, pre_compact, session_end) with default rules
-- PreCompact event emission: Fires at budget limit/warning check points in stream_response (both REPL and query modes)
-- Hooks write to `~/.ante/memory/ante-memory.db` and `~/.ante/run/*.log` for audit trail
-- All 184 tests pass (24 protocol-shape + 120 agent-sdk + 29 exec + 11 ante)
+
+## v0.preview.37 - 2026-06-10
+
+- Update the Anthropic model catalog for the latest Claude models
+- Introduce a typed LLM error taxonomy with per-kind recovery hints in error messages
+- Reconnect dropped streams mid-turn and treat cancellation as a first-class turn outcome, including while a stream is being opened
+- Surface content-filter stops like output-limit truncation instead of failing silently
+- Fix Gemini streaming: emit thought text and signature as one thinking delta, resolve tool-response names from the dialog's tool calls, count thinking tokens in output usage, and classify recitation/blocklist stops
+- Harden OpenAI-compatible streaming: accumulate tool-call deltas split across chunks, flush buffered tool calls on premature stream EOF, isolate malformed tool-call arguments, and keep the system prompt when no user message exists
+- Forward `max_output_tokens` and `temperature` to OpenAI and preserve truncated output
+- Propagate Anthropic message conversion errors instead of dropping messages
+- Honor the HTTP-date form of `Retry-After` headers when rate limited
+
+## v0.preview.35 - 2026-06-08
+
+- Add OpenRouter provider profiles
+- Show a sign-off message and bug-report hint when exiting the TUI
+- Set the terminal window title to "Ante"
+- Handle redacted thinking blocks from the latest Claude models
+- Prevent the Bash tool from inheriting stdin
+- Fix token usage accounting for Anthropic and OpenAI-compatible streaming
+
+## v0.preview.34 - 2026-06-06
+
+- Add OpenAI-compatible provider profiles
+- Surface subagent activity as live tool updates instead of separate turn events
+- Recover from transient API decode failures instead of crashing the run
+- Allow `ANTE_INSTALL_DIR` to override the install location and harden the install script
+- Unify the LLM streaming driver across providers for consistent streaming behavior
+- Dependency updates
+
+## v0.preview.33 - 2026-06-04
+
+- Add `ante update --version <V>` to pin or roll back to a specific release
+- Retire the legacy `latest` update channel and transparently resolve it to `stable`
+- Drive vision/image support from model metadata
+- Reduce Read and multiline Grep latency
+- Fix `@`-mention handling: dedupe repeats, honor `\@` escapes after multibyte characters, and stop dropping large mentioned files
+
+## v0.preview.32 - 2026-06-04
+
+- Add `ante catalog` command to print the merged model catalog as JSON
+- Show structured turn errors instead of a raw debug dump
+- Recover from transient connection resets instead of failing the run
+- Fix Anthropic 400 error from unsigned thinking blocks
+- Fix stale OAuth credential cache
+- Migrate the Grep tool to a streaming ripgrep-style search engine
+
+## v0.preview.31 - 2026-06-02
+
+- Wrap markdown table content in narrow TUI views
+- Fix approval prompt wrapping
+- Use bundled webpki TLS roots for all HTTP clients
+- Use a blocking HTTP client for OTLP telemetry exporters
+- Speed up file searches by pruning VCS directories during traversal
+
+## v0.preview.30 - 2026-05-31
+
+- Add `ante rage` command to bundle a bug report
+- Persist tool approvals via "always allow" and store allow/ask/deny rules in settings.json
+- Let Edit create a new file via an empty `old_string`
+- Suggest a similar path when Edit targets a missing file
+- Handle CRLF files correctly in Read/Edit
+- Harden Edit/Write filesystem guards
+- Allow arbitrary model ids for explicit providers
+- Improve OpenRouter provider defaults
+- Improve responsiveness of grep/glob searches
+- Fix character-based output truncation
+- Fix image decode limits
+- Dependency updates
 
 ## v0.preview.29 - 2026-05-28
 

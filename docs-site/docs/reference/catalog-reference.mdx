@@ -31,7 +31,7 @@ The `ID` column is what you pass to `--provider`. Providers authenticating via O
 
 ## Models by provider
 
-Each provider ships a set of `preferred_models` — the ids that appear in the model picker and that `--model` accepts. `openai-compatible` and `local` have no preferred models: they are **wildcards** that accept any id (see [Resolution](#how-a-model-and-provider-are-chosen)).
+Each provider ships a set of `preferred_models` — the ids that appear in the model picker and the default model chosen when that provider is selected. Explicit provider choices are authoritative: if you pass `--provider`, Ante sends the model id you supplied to that provider even when it is not listed in `preferred_models` (see [Resolution](#how-a-model-and-provider-are-chosen)).
 
 ### Anthropic
 
@@ -135,17 +135,16 @@ ante --provider zai --model glm-5.1
 
 | Model | Description | Context |
 |---|---|---|
-| `anthropic/claude-opus-4.6` | Claude Opus 4.6 | 1M |
-| `anthropic/claude-sonnet-4.6` | Claude Sonnet 4.6 | 1M |
-| `google/gemini-3.1-pro-preview` | Gemini 3.1 Pro | 1M |
-| `openai/gpt-5.4-pro` | GPT-5.4 Pro | 1.05M |
-| `deepseek/deepseek-v4-flash` | DeepSeek V4 Flash | 1M |
-| `deepseek/deepseek-v4-pro` | DeepSeek V4 Pro | 1M |
+| `deepseek/deepseek-v4-flash` | DeepSeek V4 Flash | 1.05M |
+| `qwen/qwen3.7-max` | Qwen3.7 Max | 1M |
+| `moonshotai/kimi-k2.6` | Kimi K2.6 reasoning model with vision | 262K |
+| `minimax/minimax-m2.7` | MiniMax M2.7 model | 205K |
+| `deepseek/deepseek-v4-pro` | DeepSeek V4 Pro | 1.05M |
 
 Open Router also accepts any model from its [full model list](https://openrouter.ai/models) by id.
 
 ```bash
-ante --provider openrouter --model anthropic/claude-sonnet-4.6
+ante --provider openrouter --model deepseek/deepseek-v4-pro
 ```
 
 ### DeepSeek
@@ -255,7 +254,7 @@ A `providers` entry whose key matches a built-in (e.g. `openai`) replaces that p
 | `wire_style` | ✅ | API dialect Ante speaks — `AnthropicMessage`, `OpenAiCompatible`, `OpenAiResponse`, or `Gemini`. |
 | `auth` | — | How to authenticate (see [Authentication](#authentication)). Omit for a provider that needs no key. |
 | `http_headers` | — | Extra headers sent with every request, as a string→string map. |
-| `preferred_models` | — | Models this provider serves (see [Model fields](#model-fields)). An empty or omitted list makes the provider a **wildcard** that accepts any model id. |
+| `preferred_models` | — | Models shown for this provider in the picker and used as provider defaults (see [Model fields](#model-fields)). An empty or omitted list means the provider has no picker/default model of its own. |
 
 ```json
 {
@@ -334,7 +333,9 @@ When Ante resolves a model id it layers three sources, last wins:
 2. **`models` override** — your partial patch for that id, if any.
 3. **Environment overrides** — the process env vars below win over everything.
 
-Providers are matched to models too. A model declared in a provider's `preferred_models` is bound to that provider; asking a *different* provider to serve it is refused (start a new session to switch providers). Wildcard providers — those with no `preferred_models`, like `openai-compatible` and `local` — accept any model id. Because the canonical spec is found across **all** providers, pinning a known id (e.g. `kimi-k2.5`) under a wildcard provider still inherits that model's spec.
+Providers are matched to models too. If you pass only `--model`, Ante picks an authenticated provider whose `preferred_models` list contains that id, falling back to an authenticated provider with no `preferred_models`, then to the default provider.
+
+If you pass both `--provider` and `--model`, the explicit provider choice wins as long as that provider is authenticated. Ante still resolves the model id globally first, so known ids inherit catalog metadata and user overrides even when served by a different provider; unknown ids are passed through as bare model specs.
 
 When you don't pass `--model`/`--provider`, Ante auto-detects: it uses the first authenticated provider in catalog order and its first preferred model, falling back to `local` if nothing is authenticated.
 

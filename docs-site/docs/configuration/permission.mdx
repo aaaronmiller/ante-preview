@@ -15,7 +15,14 @@ Ante has a permission system that controls whether tool calls are auto-approved,
 Set the policy in `~/.ante/settings.json`:
 
 ```json
-{ "policy": "default" }
+{
+  "policy": "default",
+  "permissions": {
+    "allow": ["Bash(npm run *)"],
+    "ask": ["Write"],
+    "deny": ["Bash(rm *)"]
+  }
+}
 ```
 
 Or override per-session:
@@ -38,14 +45,16 @@ In headless mode, `yolo` policy is implied — all tools are auto-approved since
 
 ## Rules
 
-Permission rules pair a **decision** with a **tool matcher**. Rules are evaluated in order — **first match wins**.
+Permission rules pair a **decision** with a **tool matcher**. Persistent rules live in `~/.ante/settings.json` under `permissions.allow`, `permissions.ask`, and `permissions.deny`.
+
+Across those buckets, precedence is fixed: **deny > ask > allow > tool defaults**. Within each bucket, entries are evaluated in order.
 
 ```
-Rules:  [ Ask(Bash), Allow(Write), Deny(Bash(rm *)) ]
+Rules:  deny=[Bash(rm *)], ask=[Bash], allow=[Write]
                 ↓
 Tool call: Bash({ "command": "ls" })
                 ↓
-Match: Ask(Bash)  ← first rule that matches wins
+Match: Ask(Bash)
                 ↓
 Result: Ask (prompt user)
 ```
@@ -70,9 +79,13 @@ If no rule matches, the default decision is **Ask**.
 | `PTY` | Allow |
 | `ImageRead` | Allow |
 
+Simple read-only shell commands can also be auto-approved as a final fallback after explicit rules are checked.
+
 ### Session-level overrides
 
-When you approve a tool during a session (e.g. "always allow Bash"), Ante inserts an `Allow` rule at the **front** of the rule list, effectively overriding the default `Ask` for that tool for the remainder of the session.
+When you approve a tool during a session, Ante can add a temporary allow rule for the current run. If you choose an "always allow" option, Ante also appends that matcher to `permissions.allow` in `~/.ante/settings.json` so it applies in future sessions.
+
+For `Bash` and `Agent`, the persisted matcher is scoped to the exact approved command or sub-agent type. Other tools are persisted by tool name because their arguments are not part of permission matching.
 
 ## Tool matchers
 
@@ -113,6 +126,8 @@ Agent(explore)
 :::note
 The glob `safe-cmd:*` does **not** match `safe-cmd --flag`. Use `safe-cmd *` (with a space) to match space-separated arguments.
 :::
+
+Malformed permission rules are skipped individually with a warning. Valid sibling rules and other settings still load.
 
 ## Tool filtering
 
