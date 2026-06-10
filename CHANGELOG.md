@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.preview.37 - 2026-06-10
+
+- Update the Anthropic model catalog for the latest Claude models
+- Introduce a typed LLM error taxonomy with per-kind recovery hints in error messages
+- Reconnect dropped streams mid-turn and treat cancellation as a first-class turn outcome, including while a stream is being opened
+- Surface content-filter stops like output-limit truncation instead of failing silently
+- Fix Gemini streaming: emit thought text and signature as one thinking delta, resolve tool-response names from the dialog's tool calls, count thinking tokens in output usage, and classify recitation/blocklist stops
+- Harden OpenAI-compatible streaming: accumulate tool-call deltas split across chunks, flush buffered tool calls on premature stream EOF, isolate malformed tool-call arguments, and keep the system prompt when no user message exists
+- Forward `max_output_tokens` and `temperature` to OpenAI and preserve truncated output
+- Propagate Anthropic message conversion errors instead of dropping messages
+- Honor the HTTP-date form of `Retry-After` headers when rate limited
+
 ## v0.preview.35 - 2026-06-08
 
 - Add OpenRouter provider profiles
