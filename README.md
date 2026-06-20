@@ -1,5 +1,8 @@
 # Ante — Extensible Agent Runtime
 
+[![GitHub stars](https://img.shields.io/github/stars/aaaronmiller/ante-preview?style=flat-square)](https://github.com/aaaronmiller/ante-preview)
+[![Rust](https://img.shields.io/badge/language-Rust-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
+
 **Ante** is an extensible agent runtime wrapping Claude Code. It adds memory, hooks, tools, sessions, MCP servers, sub-agents, model routing, HITL approval, and wiki-memory to the upstream CLI — without losing any Claude Code capability.
 
 ## Differentiators (vs. Upstream Claude Code)
