@@ -1,5 +1,7 @@
 # Ante — Extensible Agent Runtime
 
+![Architecture](docs/screenshot.png)
+
 [![GitHub stars](https://img.shields.io/github/stars/aaaronmiller/ante-preview?style=flat-square)](https://github.com/aaaronmiller/ante-preview)
 [![Rust](https://img.shields.io/badge/language-Rust-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 
