@@ -26,7 +26,7 @@ async fn test_agent_loading_and_retrieval() {
     write_agent(&agents_dir, "reader", "Reads files from disk", "reader", "You read files.");
     write_agent(&agents_dir, "writer", "Writes files to disk", "writer", "You write files.");
 
-    let registry = agent_sdk::agents::AgentRegistry::load(&agents_dir).unwrap();
+    let registry = ante_sdk::agents::AgentRegistry::load(&agents_dir).unwrap();
     let all = registry.all();
     assert_eq!(all.len(), 2, "should load 2 agents");
 
@@ -43,8 +43,8 @@ async fn test_task_decomposition() {
     write_agent(&agents_dir, "reader", "Reads files", "reader", "You read files.");
     write_agent(&agents_dir, "analyzer", "Analyzes content", "analyzer", "You analyze output.");
 
-    let registry = agent_sdk::agents::AgentRegistry::load(&agents_dir).unwrap();
-    let graph = agent_sdk::agents::decompose_request(
+    let registry = ante_sdk::agents::AgentRegistry::load(&agents_dir).unwrap();
+    let graph = ante_sdk::agents::decompose_request(
         "read the file, then analyze the output",
         &registry,
     );
@@ -57,7 +57,7 @@ async fn test_task_decomposition() {
 
 #[tokio::test]
 async fn test_dispatch_and_synthesize() {
-    use agent_sdk::agents::dispatcher::{TaskResult, synthesize_results};
+    use ante_sdk::agents::dispatcher::{TaskResult, synthesize_results};
 
     let result_a = TaskResult {
         task_id: "1".into(),
@@ -88,9 +88,9 @@ async fn test_dispatch_and_synthesize() {
 
 #[tokio::test]
 async fn test_task_graph_creation() {
-    use agent_sdk::agents::loader::TaskNode;
+    use ante_sdk::agents::loader::TaskNode;
 
-    let graph = agent_sdk::agents::TaskGraph {
+    let graph = ante_sdk::agents::TaskGraph {
         tasks: vec![
             TaskNode {
                 id: "a".into(),

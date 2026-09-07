@@ -1,0 +1,53 @@
+---
+title: Slash Commands
+description: "Built-in commands for common actions in the interactive TUI"
+---
+
+# Slash Commands
+
+Type `/` in the [interactive TUI](/usage/tui) to run built-in commands for common actions:
+
+| Command | Description |
+|---|---|
+| `/clear` | Clear conversation history |
+| `/init` | Analyze the project and create an `AGENTS.md` file |
+| `/exit` | Exit Ante |
+| `/compact [instructions]` | Free context by compacting older history; optional instructions steer what the handoff summary emphasizes or preserves |
+| `/config` | Open the settings dialog — search, toggle, and jump into the theme, model, provider, status line, MCP, and offline dialogs (see [Preferences](/configuration/preference#settings-file)) |
+| `/theme` | Open theme selection dialog |
+| `/diff` | Show git diff (including untracked files) |
+| `/connect` | Sign in with OAuth (API keys are detected automatically) |
+| `/models [model_id]` | With no argument, open the model and effort picker for the current provider; with a model id, switch to it directly — including ids the catalog does not list |
+| `/providers` | Select an available provider for the current session |
+| `/add-provider` | Set up a custom provider in `catalog.json` — discovers the endpoint's models and can probe which effort levels each accepts (see [Custom catalog](/usage/providers#custom-catalog)) |
+| `/offline-mode` | Run a local model with the built-in inference engine |
+| `/term [name [args...]]` | With no name, open the terminal-session picker; with a name, attach or detach that tmux session, launching a same-named command plus arguments when the session is new — see [Terminal sessions](/usage/tui#terminal-sessions) |
+| `/update [skip \| cancel]` | Schedule the pending update for installation on exit; `skip` dismisses that version and `cancel` unschedules an accepted update |
+| `/context` | Visualize current context usage as a colored grid, broken down by category |
+| `/usage` | Show what the session has spent so far — token counts per model, cache hit rate, and turn count (see [Session usage](/usage/tui#session-usage)) |
+| `/welcome` | Show the welcome/onboarding dialog |
+| `/resume` | Resume a previous session in this directory |
+| `/rename [title]` | Give the session a title, shown in the resume picker and the terminal tab; with no argument, clear it (see [Session title](/usage/tui#session-title)) |
+| `/resume-claude [id]` | Continue a recent Claude Code session in this directory (a bundled skill — see [Coming from Claude Code or Codex](/usage/tui#coming-from-claude-code-or-codex)) |
+| `/resume-codex [id]` | Continue a recent Codex session in this directory (a bundled skill) |
+| `/import-claude` | Copy Claude Code's project memory for this directory into Ante's [project memory](/extend/memory#importing-claude-code-memory) |
+| `/statusline` | Configure the status line |
+| `/mcp` | Inspect and manage configured [MCP servers](/extend/mcp) |
+| `/goal [<condition> \| clear]` | Keep working until a condition is met, clear the active goal, or show goal status |
+
+:::note
+Some commands are "visible" (appear in conversation history) and others are "silent" (execute without adding to history). `/clear`, `/init`, `/exit`, `/compact`, `/context`, `/usage`, `/goal`, and `/rename` are visible; the rest are silent.
+:::
+
+## Skills as slash commands
+
+[Skills](/extend/skills) also appear as slash commands, with scope indicators: `[p]` for project-level, `[u]` for user-level, and `[s]` for system-level skills.
+
+As you type, tokens that match a known command or skill name are highlighted in the composer, so you can see at a glance that a command is recognized before you send it.
+
+## Related
+
+- `/models` and `/providers` are two halves of one flow; see [Models, Providers & Effort](/usage/models-and-thinking).
+- `/goal` powers [goal-driven sessions](/usage/goal-sessions): keep working until a success condition is met.
+- `/resume` picks up a previous conversation; see [session resume](/usage/tui#session-resume).
+- `/rename` labels the current session so `/resume` can show it by name; see [session title](/usage/tui#session-title).

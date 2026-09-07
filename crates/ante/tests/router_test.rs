@@ -2,7 +2,7 @@
 //! Tests T048: Verify router selects correct model based on task complexity,
 //! cost ordering, and fallback behavior.
 
-use agent_sdk::router::{ModelRouter, ModelPoolEntry};
+use ante_sdk::router::{ModelRouter, ModelPoolEntry};
 
 fn test_pool() -> Vec<ModelPoolEntry> {
     vec![

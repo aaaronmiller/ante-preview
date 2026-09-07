@@ -16,7 +16,7 @@ pub use mcp_manager::{
 pub use pool::{
     ExecError, ExecRequest, ExecResponse, PollRequest, PoolConfig, ProcessPool, StdinRequest,
 };
-pub use process_group::kill_by_pid;
+pub use process_group::{kill_by_pid, kill_process_group, process_group_is_alive};
 pub use receiver::OutputReceiver;
 pub use subprocess::{
     CommandOptions, RunOutput, StdinMode, run_with_timeout, terminate_child_process_group,

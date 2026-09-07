@@ -1,7 +1,7 @@
 //! Integration test for human-in-the-loop approval system.
 //! Tests T058: Verify risk classification, approval/deny flow, and timeout behavior.
 
-use agent_sdk::hitl::{ApprovalManager, ApprovalDecision, RiskLevel};
+use ante_sdk::hitl::{ApprovalManager, ApprovalDecision, RiskLevel};
 use std::time::Duration;
 
 fn risk_level_to_int(r: RiskLevel) -> u8 {

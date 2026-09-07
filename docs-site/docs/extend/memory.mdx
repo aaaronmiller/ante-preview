@@ -9,6 +9,8 @@ Ante has a persistent memory system that lets the agent build up knowledge acros
 
 Each project has a memory directory at `~/.ante/projects/<project-id>/memory/`, where `<project-id>` is a sanitized form of the project's absolute path. The key file is `MEMORY.md` — its contents are injected into the system prompt at the start of every conversation.
 
+Auto-memory is enabled by default in the interactive TUI and disabled by default in headless `-p` runs. Use `--enable-auto-memory` to opt a headless run into memory, or `--disable-auto-memory` to turn it off for a TUI session. To make either choice persistent, set `auto_memory` in [`settings.json`](/configuration/preference#settings-file).
+
 ### Automatic behavior
 
 As the agent works on your project, it:
@@ -19,7 +21,7 @@ As the agent works on your project, it:
 
 ### MEMORY.md
 
-The main memory file. Its first 200 lines are included in the system prompt. Keep it concise — link to separate topic files for details.
+The main memory file. It is injected into the system prompt up to a cap of 200 lines or 25 KB, whichever comes first (a truncation note is appended when it overflows). Keep it concise — link to separate topic files for details.
 
 ```markdown
 # Project patterns
@@ -45,6 +47,34 @@ memory/
 └── architecture.md     # Architecture decisions
 ```
 
+## Memory types
+
+When auto-memory is on, the agent is taught to save **typed** memories — each topic file carries `name`, `description`, and `type` frontmatter so future sessions can decide what is relevant. There are four types:
+
+| Type | What it captures |
+|---|---|
+| `user` | The user's role, expertise, goals, and preferences — so explanations and defaults can be tailored to them. |
+| `feedback` | Guidance on how to work in this project, drawn from corrections and confirmations alike. Leads with the rule, then a **Why** and **How to apply** line. |
+| `project` | Ongoing work, decisions, or constraints not derivable from code or git. Same **Why** / **How to apply** structure; relative dates are stored as absolute. |
+| `reference` | Pointers to where current truth lives in external systems (a Linear project, a Grafana board, a Slack channel). |
+
+A typed topic file looks like:
+
+```markdown
+---
+name: bundle-refactors
+description: Prefer one bundled PR for refactors in this area
+type: feedback
+---
+
+For multi-file refactors here, prefer a single bundled PR over splitting.
+
+**Why:** the user confirmed it — a validated call, not a correction.
+**How to apply:** multi-file refactors touching this area.
+```
+
+The agent deliberately **does not** save secrets, in-progress task state, or anything already re-readable from the repo (code structure, file paths, conventions — those belong in `AGENTS.md`). Recalled memory is treated as background context that reflects a past moment, so the agent re-verifies any file, flag, or function a memory names before acting on it.
+
 ## Guidelines
 
 The memory system follows these principles:
@@ -53,6 +83,10 @@ The memory system follows these principles:
 - **Semantic** — Organize by topic, not chronologically
 - **Accurate** — Update or remove outdated information
 - **Actionable** — Record what worked, what didn't, and why
+
+## Importing Claude Code memory
+
+`/import-claude` copies Claude Code's project memory for the current directory — the top-level `.md` files under `~/.claude/projects/<project-dir>/memory/` — into Ante's project memory. Existing Ante files are never overwritten, so re-running the command is a clean no-op. The command reports which files were imported and which were skipped because they already existed.
 
 ## Memory is per-project
 

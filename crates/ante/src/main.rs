@@ -22,24 +22,24 @@ use std::time::Instant;
 
 use status::{StatusBar, render_banner};
 
-use agent_sdk::agents::loader::AgentRegistry;
-use agent_sdk::budget::{BudgetConfig, BudgetTracker};
-use agent_sdk::claude::{
+use ante_sdk::agents::loader::AgentRegistry;
+use ante_sdk::budget::{BudgetConfig, BudgetTracker};
+use ante_sdk::claude::{
     AssistantMessage, Claude, ClaudeMessage, ClaudeOptions, ContentBlock, ControlRequestMessage,
     ControlResponseMessage, ResultMessage, StreamEventMessage, SystemMessage, UserMessage,
 };
-use agent_sdk::event::EventBus;
-use agent_sdk::hitl::{ApprovalDecision, ApprovalManager, HitlMode, RiskLevel};
-use agent_sdk::hooks::registry::HookRegistry;
-use agent_sdk::init::first_run_setup;
-use agent_sdk::mcp::registry::{McpServerConfigEntry, McpToolRegistry};
-use agent_sdk::memory::server::MemoryServer;
-use agent_sdk::memory::store::MemoryStore;
-use agent_sdk::router::ModelRouter;
-use agent_sdk::sessions::SessionManager;
-use agent_sdk::settings::load_settings;
-use agent_sdk::ui::diagram::render;
-use agent_sdk::ui::todo::TodoList;
+use ante_sdk::event::EventBus;
+use ante_sdk::hitl::{ApprovalDecision, ApprovalManager, HitlMode, RiskLevel};
+use ante_sdk::hooks::registry::HookRegistry;
+use ante_sdk::init::first_run_setup;
+use ante_sdk::mcp::registry::{McpServerConfigEntry, McpToolRegistry};
+use ante_sdk::memory::server::MemoryServer;
+use ante_sdk::memory::store::MemoryStore;
+use ante_sdk::router::ModelRouter;
+use ante_sdk::sessions::SessionManager;
+use ante_sdk::settings::load_settings;
+use ante_sdk::ui::diagram::render;
+use ante_sdk::ui::todo::TodoList;
 use ante_protocol_shape::payload::RiskLevel as ProtocolRiskLevel;
 use ante_protocol_shape::settings::Settings;
 use ante_protocol_shape::{
@@ -358,10 +358,10 @@ impl AgentContext {
 
         // ── Model router ─────────────────────────────────────────────────
         // Convert protocol-shape ModelPoolEntry to agent-sdk ModelPoolEntry
-        let router_entries: Vec<agent_sdk::router::ModelPoolEntry> = settings
+        let router_entries: Vec<ante_sdk::router::ModelPoolEntry> = settings
             .model_pool
             .iter()
-            .map(|e| agent_sdk::router::ModelPoolEntry {
+            .map(|e| ante_sdk::router::ModelPoolEntry {
                 model: e.model_id.clone(),
                 capability: (e.capability_score / 10).min(10) as u8,
                 cost_per_1k_input: e.cost_per_1k_input,
@@ -460,7 +460,7 @@ impl AgentContext {
             .as_ref()
             .map(|m| m.search("").len())
             .unwrap_or(0);
-        let agent_count = match agent_sdk::agents::loader::AgentRegistry::load(&expand_tilde_path(
+        let agent_count = match ante_sdk::agents::loader::AgentRegistry::load(&expand_tilde_path(
             self.settings.agents.directory.clone(),
         )) {
             Ok(reg) => reg.count(),
@@ -693,7 +693,7 @@ async fn run_repl_with_options(
                     let messages: Vec<String> = lines
                         .iter()
                         .filter_map(|line| {
-                            use agent_sdk::sessions::SessionLine;
+                            use ante_sdk::sessions::SessionLine;
                             match line {
                                 SessionLine::Message(msg) => {
                                     let role = &msg.message.role;
@@ -1815,7 +1815,7 @@ async fn handle_repl(
 
 fn handle_memory_direct(command: MemoryCommands) -> Result<(), Box<dyn std::error::Error>> {
     // Use the shared memory path (settings default: ~/ai-wiki/.meta/ante-memory.db)
-    use agent_sdk::settings::load_settings;
+    use ante_sdk::settings::load_settings;
     let settings = load_settings().ok();
     let mem_path = settings
         .as_ref()
@@ -1926,14 +1926,14 @@ fn handle_sessions(command: SessionCommands) -> Result<(), Box<dyn std::error::E
                     let msg_lines: Vec<String> = lines
                         .iter()
                         .filter_map(|line| match line {
-                            agent_sdk::sessions::SessionLine::Session(h) => {
+                            ante_sdk::sessions::SessionLine::Session(h) => {
                                 provider = h.provider.clone().unwrap_or_default();
                                 model = h.model_id.clone().unwrap_or_default();
                                 cwd = h.cwd.clone().unwrap_or_default();
                                 started = h.timestamp.clone();
                                 None
                             }
-                            agent_sdk::sessions::SessionLine::Message(msg) => {
+                            ante_sdk::sessions::SessionLine::Message(msg) => {
                                 let role = &msg.message.role;
                                 let content_str = match &msg.message.content {
                                     serde_json::Value::String(s) => s.clone(),
@@ -2356,7 +2356,7 @@ fn print_agent_match(registry: &AgentRegistry, task: &str) {
 }
 
 fn render_agent_task_prompt(
-    agent: &agent_sdk::agents::loader::SubAgent,
+    agent: &ante_sdk::agents::loader::SubAgent,
     task: &str,
     read_only: bool,
 ) -> String {
@@ -2383,7 +2383,7 @@ fn render_agent_task_prompt(
 }
 
 fn run_opencode_agent(
-    agent: &agent_sdk::agents::loader::SubAgent,
+    agent: &ante_sdk::agents::loader::SubAgent,
     prompt: &str,
     model: &str,
     cwd: &Path,

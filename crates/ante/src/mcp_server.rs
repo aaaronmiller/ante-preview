@@ -14,9 +14,9 @@
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
-use agent_sdk::memory::server::MemoryServer;
-use agent_sdk::ui::diagram;
-use agent_sdk::ui::todo::TodoList;
+use ante_sdk::memory::server::MemoryServer;
+use ante_sdk::ui::diagram;
+use ante_sdk::ui::todo::TodoList;
 use serde_json::Value;
 
 /// Start the MCP server loop.  Reads JSON-RPC requests from stdin

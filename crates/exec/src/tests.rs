@@ -203,7 +203,7 @@ async fn background_file_ipc_pattern() -> Result<()> {
 
     timeout(Duration::from_secs(5), handle.wait_for_exit()).await?;
     drop(handle);
-    let _ = timeout(Duration::from_secs(5), file_task).await?;
+    timeout(Duration::from_secs(5), file_task).await???;
 
     let content = tokio::fs::read_to_string(&output_path).await?;
     assert!(content.contains("line1"));
@@ -270,6 +270,8 @@ async fn run_with_timeout_tracks_stdout_and_stderr_truncation_independently() ->
     assert_eq!(result.stderr, b"klmrst".to_vec());
     assert_eq!(result.stdout_omitted_bytes, 4);
     assert_eq!(result.stderr_omitted_bytes, 4);
+    assert_eq!(result.stdout_head_bytes, 3);
+    assert_eq!(result.stderr_head_bytes, 3);
     Ok(())
 }
 

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use std::time::Duration;
 
-use agent_sdk::agents::{
+use ante_sdk::agents::{
     Broker, Transport, connect_to_broker,
 };
 

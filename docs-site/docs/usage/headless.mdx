@@ -35,6 +35,8 @@ echo "function add(a, b) { return a + b }" | ante -p "add TypeScript types"
 
 When both stdin and a prompt argument are provided, they are concatenated (stdin first, then the prompt).
 
+Redirected stdout is headless-only. Plain `ante > out.txt` with no prompt refuses to start, because the TUI draws to stdout and boots by asking the terminal where the cursor is. Pass a prompt, or pipe one in, to capture output to a file.
+
 ## CLI reference
 
 ```
@@ -46,15 +48,23 @@ ante [OPTIONS] [--prompt <PROMPT>]
 | `-p`, `--prompt <PROMPT>` | The prompt to run |
 | `-m`, `--model <MODEL>` | Override the model name |
 | `--provider <PROVIDER>` | Override the API provider (e.g. `anthropic`, `openai`, `gemini`, `xai`, `openrouter`, `local`) |
+| `--profile <NAME>` | Process-wide selection of an existing `~/.ante/<name>.settings.json`; `ANTE_PROFILE` is equivalent, an unknown name falls back to `settings.json`, and the built-in `bare` profile disables ambient features, skills, MCP servers, session saving, and auto-memory |
+| `--effort <LEVEL>` | Override the model's [effort level](/usage/models-and-thinking#effort): `min`, `low`, `medium`, `high`, `xhigh`, or `max` |
 | `--yolo` | Skip all tool approval prompts |
+| `--permission-mode <MODE>` | Accepted for CLI compatibility, but headless runs always use `yolo` because there is no interactive approval prompt |
 | `--output-format <FORMAT>` | Output format: `json`, `human`, `minimal` (default: `minimal`) |
-| `--system-prompt <PROMPT>` | Replace the default system prompt entirely |
+| `--system-prompt <PROMPT>` | Replace the default system prompt entirely. Conflicts with `--system-prompt-file` |
+| `--system-prompt-file <PATH>` | Read the replacement system prompt from a UTF-8 file. Conflicts with `--system-prompt` |
 | `--append-system-prompt <TEXT>` | Append text to the system prompt |
-| `--allowed-tools <TOOLS>...` | Only allow these tools (space-separated) |
-| `--disallowed-tools <TOOLS>...` | Disallow these tools (space-separated) |
+| `--short-prompt` | Use the compact prompt set: a condensed system prompt and shorter built-in tool descriptions |
+| `--skills` / `--no-skills` | Load or skip skill discovery, overriding the `skills` setting. With `--no-skills`, no skills are advertised or invocable |
+| `--enable-auto-memory` / `--disable-auto-memory` | Turn [auto-memory](/extend/memory) on or off, overriding the `auto_memory` setting (headless default: off) |
+| `--tools <TOOLS>` | Replace the default tool set with exactly these tools. Use a comma-separated value or repeat the flag; the removed `--allowed-tools` name is rejected |
+| `--include-tools <TOOLS>` | Add tools on top of the default set, or on top of the `--tools` base set. Use a comma-separated value or repeat the flag |
+| `--exclude-tools <TOOLS>` | Remove tools after `--tools` and `--include-tools` are applied. Use a comma-separated value or repeat the flag; the deprecated `--disallowed-tools` alias remains accepted |
 | `-r`, `--resume <SESSION_ID>` | Resume a previously saved session by its ID |
+| `--session-save` / `--no-session-save` | Save or skip session persistence, overriding the `session_save` setting. With `--no-session-save`, no transcript or resumable snapshot is written; conflicts with `--resume` |
 | `--check` | Run a verification pass after the main task completes |
-| `--simple-agent` | Simple agent mode — uses a minimal system prompt with `PTY`, `ImageRead`, and `WebSearch` tools |
 | `--offline-model <PATH>` | Path to a local GGUF file. Boots a local llama-server, points the session at the `local` provider, and tears it down on exit |
 
 ## Output formats
@@ -96,25 +106,16 @@ The verification pass will:
 2. Complete anything missing or incomplete
 3. Optimize where possible without affecting correctness
 
-## Simple agent mode
-
-The `--simple-agent` flag starts Ante with a minimal system prompt and a reduced tool set (`PTY`, `ImageRead`, `WebSearch`). This is useful for lightweight automation where you don't need the full coding agent:
-
-```bash
-ante --simple-agent -p "take a screenshot and describe what you see"
-```
-
-If you also pass `--system-prompt` or `--allowed-tools`, those take precedence over the simple-agent defaults.
-
 ## Context enrichment
 
 In headless mode, Ante automatically appends the current directory's folder structure to your prompt. This gives the agent awareness of the project layout without you needing to describe it.
 
 ## Headless behavior notes
 
-- **Streaming is disabled** — Responses are buffered for cleaner output
-- **Yolo policy is implied** — All tool calls are auto-approved (no interactive prompts)
+- **Raw streaming deltas are suppressed** — Output shows complete messages, not the incremental chunks, so logs stay clean
+- **Yolo policy is implied** — All tool calls are auto-approved (no interactive prompts), regardless of `--permission-mode`
 - **Authentication is checked eagerly** — If the provider isn't authenticated, Ante exits immediately with an error
+- **Fails fast if the daemon dies** — If the agent process exits before finishing the task, Ante reports an error instead of a success exit code
 
 ## Resuming a session
 
@@ -124,7 +125,11 @@ Pass `--resume <SESSION_ID>` to continue a previously saved session. Ante replay
 ante --resume ses_01ARZ3NDEKTSV4RRFFQ69G5FAV -p "now add tests"
 ```
 
+The saved model, provider, effort, and dialog are restored directly; settings the snapshot did not pin resolve from the host's current defaults. Headless resume therefore does not need the current default provider to match the session's provider.
+
 The session ID is printed when a TUI session exits (`Resume this session with: ante --resume ses_...`).
+
+Sessions started with `--no-session-save` are never persisted, so they cannot be resumed later.
 
 ## Examples
 
@@ -137,7 +142,7 @@ ante --yolo -p "run cargo clippy and fix all warnings"
 ### Code generation
 
 ```bash
-ante --model claude-sonnet-4-6 --check \
+ante --model claude-sonnet-5 --check \
   -p "add comprehensive unit tests for src/core/session.rs"
 ```
 
@@ -145,7 +150,7 @@ ante --model claude-sonnet-4-6 --check \
 
 ```bash
 # Read-only analysis — no file writes or shell access
-ante --allowed-tools Read Glob Grep \
+ante --tools Read,Glob,Grep \
   -p "analyze the codebase architecture and summarize it"
 ```
 

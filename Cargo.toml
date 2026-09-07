@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/agent-sdk",
+    "crates/ante-sdk",
     "crates/ante",
     "crates/exec",
     "crates/protocol-shape",

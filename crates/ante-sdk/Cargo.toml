@@ -1,0 +1,26 @@
+[package]
+name = "ante-sdk"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Rust SDK for Ante: connect to a host and drive sessions over the Op/Evt protocol"
+license = "Apache-2.0"
+repository = "https://github.com/AntigmaLabs/ante"
+readme = "README.md"
+
+[dependencies]
+ante-protocol-shape = { path = "../protocol-shape" }
+serde = "1.0"
+serde_json = "1.0"
+thiserror = "2.0"
+tokio = { version = "1.52", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
+which = "8.0"
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+clap = { version = "4.6", features = ["derive"] }
+tokio = { version = "1.52", features = ["time"] }
+tempfile = "3"

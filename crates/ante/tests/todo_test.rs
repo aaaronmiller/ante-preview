@@ -1,7 +1,7 @@
 //! Integration test for persistent todo list.
 //! Tests T043: Create todos, verify persistence across sessions.
 
-use agent_sdk::ui::TodoList;
+use ante_sdk::ui::TodoList;
 use tempfile::TempDir;
 
 #[tokio::test]

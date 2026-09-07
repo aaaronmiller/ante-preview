@@ -2,7 +2,7 @@
 //! Tests T038: Store, retrieve, rank, query memory; verify SessionStart context loading.
 
 use tempfile::TempDir;
-use agent_sdk::memory::MemoryStore;
+use ante_sdk::memory::MemoryStore;
 
 #[tokio::test]
 async fn test_memory_store_and_retrieve() {

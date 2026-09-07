@@ -1,22 +1,23 @@
 ---
 title: Permissions
-description: "How Ante gates tool execution with policies, rules, and matchers"
+description: "How Ante gates tool execution with modes, rules, and matchers"
 ---
 
 Ante has a permission system that controls whether tool calls are auto-approved, require user confirmation, or are denied entirely.
 
-## Policies
+## Permission modes
 
-| Policy | Behavior |
+| Mode | Behavior |
 |---|---|
-| `default` | Each tool call is evaluated against permission rules. If no rule matches, the user is prompted for approval. |
-| `yolo` | All tool calls are auto-approved — no prompts, no rules evaluation. |
+| `strict` | Rules are honored first. If no rule matches, known-safe read-only Bash commands are allowed and everything else asks. This is the default. |
+| `auto` | Rules are honored first. If no rule matches, tool calls are allowed unless Bash detects a dangerous command, which asks. |
+| `yolo` | All tool calls are auto-approved — no prompts, no rules evaluation, including `deny` rules. |
 
-Set the policy in `~/.ante/settings.json`:
+Set the mode in `~/.ante/settings.json`:
 
 ```json
 {
-  "policy": "default",
+  "permission_mode": "auto",
   "permissions": {
     "allow": ["Bash(npm run *)"],
     "ask": ["Write"],
@@ -29,10 +30,13 @@ Or override per-session:
 
 ```bash
 ante --yolo "run cargo clippy and fix all warnings"
+ante --permission-mode auto "update docs and run tests"
 ```
 
+In the TUI, press **Shift+Tab** to cycle the mode live: `strict` → `auto` → `yolo` → `strict`. The change applies immediately, including to later tool calls in a turn that is already running. Cycling to `strict` or `auto` also saves that mode as the default in `~/.ante/settings.json`; cycling to `yolo` is session-only, so future sessions do not silently start with permission checks off.
+
 :::warning
-In headless mode, `yolo` policy is implied — all tools are auto-approved since there is no interactive prompt.
+In headless mode, `yolo` mode is implied — all tools are auto-approved since there is no interactive prompt.
 :::
 
 ## Decisions
@@ -47,7 +51,7 @@ In headless mode, `yolo` policy is implied — all tools are auto-approved since
 
 Permission rules pair a **decision** with a **tool matcher**. Persistent rules live in `~/.ante/settings.json` under `permissions.allow`, `permissions.ask`, and `permissions.deny`.
 
-Across those buckets, precedence is fixed: **deny > ask > allow > tool defaults**. Within each bucket, entries are evaluated in order.
+Precedence is fixed: **deny > session grants > ask > allow > tool defaults**. Within each bucket, matchers are an unordered set. Session grants are the temporary allows added when you approve a call "for this session" (see [Session grants](#session-grants)).
 
 ```
 Rules:  deny=[Bash(rm *)], ask=[Bash], allow=[Write]
@@ -59,7 +63,7 @@ Match: Ask(Bash)
 Result: Ask (prompt user)
 ```
 
-If no rule matches, the default decision is **Ask**.
+If no rule matches, the mode decides the fallback: `strict` asks except for known-safe read-only Bash commands; `auto` allows except for dangerous Bash commands; `yolo` allows immediately.
 
 ### Default rules
 
@@ -75,17 +79,23 @@ If no rule matches, the default decision is **Ask**.
 | `TodoWrite` | Allow |
 | `WebFetch` | Ask |
 | `WebSearch` | Ask |
-| `Browser` | Ask |
-| `PTY` | Allow |
-| `ImageRead` | Allow |
+| `ViewImage` | Allow |
 
-Simple read-only shell commands can also be auto-approved as a final fallback after explicit rules are checked.
+In `strict` mode, read-only shell commands can also be auto-approved as a final fallback after explicit rules are checked. This covers vetted read-only programs — and pipelines or `&&` / `||` / `;` sequences built only from them; anything with redirections, command substitution, or an unrecognized command still prompts.
 
-### Session-level overrides
+In `auto` mode, the burden of proof is inverted for unmatched calls: non-Bash tools run, and Bash runs unless the dangerous-command classifier flags it for approval.
 
-When you approve a tool during a session, Ante can add a temporary allow rule for the current run. If you choose an "always allow" option, Ante also appends that matcher to `permissions.allow` in `~/.ante/settings.json` so it applies in future sessions.
+### Session grants
 
-For `Bash` and `Agent`, the persisted matcher is scoped to the exact approved command or sub-agent type. Other tools are persisted by tool name because their arguments are not part of permission matching.
+At an approval prompt you can approve a call in three ways:
+
+- **Yes** — approve this one call.
+- **Yes, allow … for this session** — add a temporary grant for the rest of the run. It overrides `ask`/`allow` rules and tool defaults but never a `deny`, and disappears when the session ends.
+- **Yes, always allow … (save to settings)** — also append the matcher to `permissions.allow` in `~/.ante/settings.json` so it applies in future sessions.
+
+The grant is scoped, not blanket. A single approved Bash command generalizes to a **two-token prefix** so the next sibling call doesn't re-prompt — approving `cargo test -p foo` grants `Bash(cargo test *)`. Commands the dangerous classifier flags (e.g. `rm -rf build`), commands whose second token is a flag (`ls -la`), and multi-stage sequences (`git add -A && git commit -m wip`) stay scoped to the **exact command** instead of widening. `Agent`, `Read`, `Edit`, and `Write` scope to their primary argument (sub-agent type or file path), and `Grep` and `Glob` scope to the search pattern; tools without a known primary argument grant by name.
+
+Grants are subsumption-aware: a narrower grant already covered by a broader one is dropped, and approving a broader grant absorbs the redundant narrower ones — so repeatedly approving `cargo test …` calls collapses to a single `Bash(cargo test *)` rule rather than piling up.
 
 ## Tool matchers
 
@@ -107,12 +117,27 @@ Matches a tool **only when** its primary argument matches a glob pattern:
 Bash(cargo test *)
 Bash(npm run *)
 Agent(explore)
+Read(src/**)
+Edit(src/**)
+Grep(*secret*)
+Glob(**/*.rs)
 ```
+
+Only tools with a known primary argument support scoped matchers; any other tool matches by name only.
 
 | Tool | Primary argument |
 |---|---|
 | `Bash` | `command` |
 | `Agent` | `subagent_type` |
+| `Read` | `file_path` (or `path`) |
+| `Edit` | `file_path` |
+| `Write` | `file_path` |
+| `Grep` | `pattern` |
+| `Glob` | `pattern` |
+
+For file tools, Ante normalizes the call-side path before matching permission rules: one layer of wrapping quotes is stripped, `~` is expanded, and lexical `.` / `..` segments are resolved. A rule such as `Deny(Read(/tmp/secret*))` therefore applies to equivalent spellings like `Read("~/../tmp/secret.txt")` after expansion. Rule specifiers are still glob patterns exactly as written; only the tool call argument is normalized.
+
+`Grep` and `Glob` scope to the search pattern, matched as written with no path normalization; the directory being searched is not part of the match.
 
 ### Glob syntax
 
@@ -127,20 +152,25 @@ Agent(explore)
 The glob `safe-cmd:*` does **not** match `safe-cmd --flag`. Use `safe-cmd *` (with a space) to match space-separated arguments.
 :::
 
-Malformed permission rules are skipped individually with a warning. Valid sibling rules and other settings still load.
+:::warning
+A single-command wildcard does **not** vouch for a multi-stage command. `Bash(npm run *)` matches `npm run build`, but **not** `npm run build && rm -rf /` or `npm run build | sh` — every stage of a `&&` / `||` / `;` / pipe sequence must match the rule on its own, so an allowed prefix can't smuggle an unapproved stage past it.
+:::
+
+Malformed permission rules are skipped individually, each reported in the session as `Skipping invalid permission rule ...`. Valid sibling rules and other settings still load, so one bad rule never quarantines the file.
 
 ## Tool filtering
 
 ```bash
-# Only allow these tools (whitelist)
-ante --allowed-tools Read Glob Grep "analyze the code"
+# Replace the default tool set with exactly these tools
+ante --tools Read,Glob,Grep -p "analyze the code"
 
-# Remove these tools (blacklist)
-ante --disallowed-tools Bash Write "read-only analysis"
-
-# Fine-grained: allow Bash only for specific commands
-ante --allowed-tools Read "Bash(cargo test *)" "Bash(cargo clippy *)" "analyze and test"
+# Remove these tools
+ante --exclude-tools Bash,Write -p "read-only analysis"
 ```
+
+Each filter flag consumes one comma-separated value per occurrence. Repeat the flag when that reads better; a space-separated list such as `--tools Read Glob` is not accepted.
+
+Matcher syntax such as `Bash(cargo test *)` is accepted in these lists but selects by tool name only — it keeps the whole `Bash` tool available. To scope what a tool may run, use `allow`/`ask`/`deny` rules.
 
 :::tip
 Tool filtering and permissions are independent. Filtering controls what tools **exist** in the session; permissions control whether existing tools **require approval**.
@@ -148,6 +178,6 @@ Tool filtering and permissions are independent. Filtering controls what tools **
 
 ## Mode-specific behavior
 
-In **TUI mode**, tools that require approval show an interactive prompt. You can approve or deny each call, or choose to always allow a tool for the session.
+In **TUI mode**, tools that require approval show an interactive prompt. You can approve or deny each call, grant it for the rest of the session, or save an "always allow" rule (see [Session grants](#session-grants)).
 
-In **headless mode**, `yolo` policy is implied. Use `--allowed-tools` or `--disallowed-tools` to restrict what the agent can do.
+In **headless mode**, `yolo` mode is implied. Use `--tools`, `--include-tools`, or `--exclude-tools` to restrict what the agent can do.

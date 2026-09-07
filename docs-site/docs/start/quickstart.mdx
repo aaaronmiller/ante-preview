@@ -5,7 +5,7 @@ description: "Install Ante and start using it in under a minute"
 
 ## Prerequisites
 
-- An API key or subscription from at least one LLM provider (Anthropic, OpenAI, etc.) — or use [offline mode](/experimental/offline) with no API key
+- An API key or subscription from at least one LLM provider (Anthropic, OpenAI, etc.) — or use [offline mode](/local/offline) with no API key
 
 ## Installation
 
@@ -20,6 +20,10 @@ By default this installs to `~/.ante/bin`. To install somewhere else, set `ANTE_
 ```sh
 curl -fsSL https://ante.run/install.sh | ANTE_INSTALL_DIR=/usr/local/bin bash
 ```
+
+Run the default installer as your normal user, not with `sudo`. A sudoed home-directory install would leave `~/.ante` root-owned and prevent Ante from saving settings and input history, so the installer refuses that combination.
+
+macOS release binaries are Developer ID-signed and notarized, so Gatekeeper accepts them without a manual security bypass.
 
 ## Quick examples
 
@@ -48,7 +52,7 @@ cat src/lib.rs | ante -p "review this code for bugs"
 
 ```bash
 # Override model and provider
-ante --provider openai --model gpt-5.5 -p "refactor this function"
+ante --provider openai --model gpt-5.6-sol -p "refactor this function"
 ```
 
 ### Skip tool approvals
@@ -75,14 +79,14 @@ ante update
 ante update nightly
 
 # Roll back or pin to an exact release
-ante update --version v0.preview.33
+ante update --version v0.preview.93
 ```
 
 ## What's next?
 
 <CardGroup cols={2}>
-  <Card title="TUI Cookbook" icon="book-marked" href="/cookbook/login">
-    Visual guides for every TUI workflow — login, models, files, approvals, and more.
+  <Card title="Everyday Recipes" icon="book-marked" href="/usage/providing-context">
+    Task-focused guides for common TUI workflows — models, files, approvals, and more.
   </Card>
   <Card title="TUI Guide" icon="terminal" href="/usage/tui">
     Master the interactive terminal interface.
@@ -90,8 +94,8 @@ ante update --version v0.preview.33
   <Card title="Headless Mode" icon="code" href="/usage/headless">
     All CLI flags and output formats.
   </Card>
-  <Card title="Offline Mode" icon="wifi-slash" href="/experimental/offline">
-    Run models locally with no internet.
+  <Card title="Local Models" icon="wifi-slash" href="/local/overview">
+    Run models on your own hardware.
   </Card>
   <Card title="Server Mode" icon="server" href="/usage/serve">
     Drive Ante programmatically via JSONL.

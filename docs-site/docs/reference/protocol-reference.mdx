@@ -18,7 +18,7 @@ Every operation is wrapped in an `OpMsg`:
 
 ```json
 {
-  "op": { "StartSession": { "model": "claude-sonnet-4-6", "provider": "anthropic", "streaming": true } },
+  "op": { "StartSession": { "model": "claude-sonnet-5", "provider": "anthropic" } },
   "id": "op_01ARZ3NDEKTSV4RRFFQ69G5FAV"
 }
 ```
@@ -55,52 +55,66 @@ Example: `op_01J5A3B7C9D0E1F2G3H4J5K6M7`
 
 ### StartSession
 
-Initialize a new session with model, provider, and configuration.
+Initialize a new session, replacing any session already running. A field supplied by the client is pinned; an omitted or `null` field resolves from the host's settings at this session boundary, or from Ante's built-in default when the setting is absent.
 
 ```json
 {
   "op": {
     "StartSession": {
-      "model": "claude-sonnet-4-6",
+      "model": "claude-sonnet-5",
       "provider": "anthropic",
-      "policy": null,
-      "streaming": true,
+      "permission_mode": null,
       "system_prompt": null,
       "append_system_prompt": null,
-      "allowed_tools": null,
-      "disallowed_tools": null,
+      "tools": null,
+      "include_tools": null,
+      "exclude_tools": null,
       "cwd": null,
-      "thinking": null
+      "effort": null,
+      "enable_auto_memory": null,
+      "short_prompt": null,
+      "no_skills": null,
+      "save_session": null,
+      "title": null
     }
   },
   "id": "op_..."
 }
 ```
 
-**SessionConfig fields:**
+**SessionRequest fields:**
 
 | Field | Type | Description |
 |---|---|---|
-| `model` | `string` | Model name (e.g. `"claude-sonnet-4-6"`) |
-| `provider` | `string` | Provider name (e.g. `"anthropic"`, `"openai"`, `"gemini"`, `"xai"`, `"openrouter"`, `"local"`) |
-| `policy` | `PermissionMode?` | Tool approval policy. `null` uses default |
-| `streaming` | `bool` | Enable streaming deltas (`MessageDelta`, `ThinkingDelta`) |
+| `model` | `string?` | Model name (e.g. `"claude-sonnet-5"`); `null` uses the host default |
+| `provider` | `string?` | Provider name (e.g. `"anthropic"`, `"openai"`, `"gemini"`, `"xai"`, `"openrouter"`, `"local"`); `null` uses the host default |
+| `permission_mode` | `PermissionMode?` | Tool approval mode: `"strict"`, `"auto"`, or `"yolo"`; `null` uses the host default |
 | `system_prompt` | `string?` | Override the default system prompt entirely |
 | `append_system_prompt` | `string?` | Append content to the default system prompt |
-| `allowed_tools` | `string[]?` | Whitelist — only these tools are available |
-| `disallowed_tools` | `string[]?` | Blacklist — these tools are removed |
+| `tools` | `string[]?` | Exactly these tools, replacing the default tool set as the base. Also gates dynamically registered (MCP) tools |
+| `include_tools` | `string[]?` | Tools added on top of the base set (`tools`, or the default set) |
+| `exclude_tools` | `string[]?` | Tools removed from the session; wins over `tools` and `include_tools` |
 | `cwd` | `string?` | Working directory. Defaults to daemon's process directory |
-| `thinking` | `Thinking?` | Thinking level override: `"Disabled"`, `"Enabled"`, `"Deep"`, or `"Max"` |
+| `effort` | `Effort?` | [Effort](/usage/models-and-thinking#effort) override: `"min"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"`. `null` resolves from the catalog |
+| `enable_auto_memory` | `bool?` | Whether the agent records and recalls [auto-memory](/extend/memory). `null` leaves the daemon default (on for interactive sessions) |
+| `short_prompt` | `bool?` | Use compact tool descriptions and system prompt to shrink the context footprint. `null` leaves the settings default |
+| `no_skills` | `bool?` | When `true`, skip all skill discovery so no skills are advertised or invocable. `null` leaves the session default |
+| `save_session` | `bool?` | Whether to write a transcript and resumable snapshot. `null` leaves the host's session-saving default |
+| `title` | `string?` | A display name for the session, shown in place of the first message in resume pickers. Trimmed; empty after trimming means no title. `null` starts the session untitled |
+
+`SessionRequest` replaced the former `SessionOverrides` name in `v0.preview.92`. The JSON field names stayed the same, but absence now has one explicit meaning for `StartSession`: resolve the host's default now, never “leave the previous session unchanged.” A client implementing `/clear` should retain and resend its own request, applying any model or permission-mode changes it made; there is no separate restart operation.
 
 ### UpdateSession
 
-Update the active session without restarting it (e.g. switch models mid-session). Today `SessionUpdate` carries only a new `ModelSpec`; other session options must be set at `StartSession` time.
+Update the active session without restarting it (e.g. switch models or permission mode mid-session). Each field is optional; an absent field is left unchanged. A permission-mode change — what `Shift+Tab` cycling sends from the TUI — takes effect immediately, applying to the turn already in flight as well as later ones; a model change applies on the next turn. A `title` change applies at once and is echoed back on the `SessionUpdated` event. Other session options must be set at `StartSession` time.
 
 ```json
 {
   "op": {
     "UpdateSession": {
-      "model": { "name": "gpt-5.4", "temperature": 0.2 }
+      "model": { "id": "gpt-5.4", "temperature": 0.2, "effort": "high" },
+      "permission_mode": "auto",
+      "title": "auth refactor"
     }
   },
   "id": "op_..."
@@ -111,11 +125,13 @@ Update the active session without restarting it (e.g. switch models mid-session)
 
 | Field | Type | Description |
 |---|---|---|
-| `model` | `ModelSpec` | New model specification to use |
+| `model` | `ModelSpec?` | New model specification to use. Carries the whole request, `effort` included: a set `effort` overrides the catalog default; unset fields resolve from the catalog |
+| `permission_mode` | `PermissionMode?` | New permission mode (`"strict"`, `"auto"`, or `"yolo"`) |
+| `title` | `string?` | Rename the session. The text is trimmed; an empty or whitespace-only string clears the title |
 
 ### ResumeSession
 
-Resume a previously persisted session by its ID. The daemon restores the conversation history, re-discovers extensions, and replays recent events so the client can rebuild its view.
+Resume a previously persisted session by its ID. The daemon restores the saved dialog and pinned model, provider, and effort, resolves anything the snapshot did not pin from the host's current defaults, re-discovers extensions, and replays recent events so the client can rebuild its view.
 
 ```json
 { "op": { "ResumeSession": { "session_id": "ses_01ARZ..." } }, "id": "op_..." }
@@ -143,6 +159,14 @@ Submit user text input to the agent.
 { "op": { "UserInput": "explain what this project does" }, "id": "op_..." }
 ```
 
+### ShellInput
+
+Run a shell command on the daemon side without starting a turn — the `!command` path in the TUI. The daemon answers with a `ShellOutput` event and queues the output into the agent's context for the next turn.
+
+```json
+{ "op": { "ShellInput": "git status" }, "id": "op_..." }
+```
+
 ### ApprovalResponse
 
 Respond to a tool approval request (sent after receiving a `TurnPause` event with `Approval` reason).
@@ -153,8 +177,12 @@ Respond to a tool approval request (sent after receiving a `TurnPause` event wit
     "ApprovalResponse": {
       "turn_id": "step_01ARZ...",
       "responses": [
-        ["tool_use_abc123", "Accept"],
-        ["tool_use_def456", "Skip"]
+        { "tool_use_id": "tool_use_abc123", "decision": "Accept" },
+        {
+          "tool_use_id": "tool_use_def456",
+          "decision": "Deny",
+          "message": "use the read-only endpoint"
+        }
       ]
     }
   },
@@ -162,14 +190,22 @@ Respond to a tool approval request (sent after receiving a `TurnPause` event wit
 }
 ```
 
+**ToolDecision fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `tool_use_id` | `string` | Tool call being decided (matches `ToolStart.id`) |
+| `decision` | `ReviewDecision` | One of the values below |
+| `message` | `string?` | Feedback returned with a denial. Omit for every other decision |
+
 **ReviewDecision values:**
 
 | Decision | Description |
 |---|---|
 | `Accept` | Allow this tool call |
-| `Skip` | Skip this tool call |
-| `AcceptForSession` | Allow this tool for the rest of the session |
-| `Abort` | Abort the current task |
+| `Deny` | Deny this tool call. The agent receives a failed tool result — `Tool call denied by user: <message>` when a `message` is present, otherwise `Tool call denied by user and was not executed.` |
+| `AcceptForSession` | Grant this call for the rest of the session (scoped — see [Session grants](/configuration/permission#session-grants)) |
+| `AcceptAlways` | Grant for the session and persist an allow rule to `settings.json` ("always allow") |
 
 ### SlashCommand
 
@@ -177,6 +213,44 @@ Invoke a skill by name.
 
 ```json
 { "op": { "SlashCommand": { "name": "commit", "args": "-m 'fix bug'" } }, "id": "op_..." }
+```
+
+### Compact
+
+Manually trigger conversation compaction on the active session (what `/compact` sends). Optional `instructions` steer what the replacement summary emphasizes or preserves; they are ignored when the reducer can reclaim enough context without writing a summary. The daemon emits `CompactStart` and `CompactEnd` around the operation.
+
+```json
+{ "op": { "Compact": {} }, "id": "op_..." }
+{ "op": { "Compact": { "instructions": "focus on the API changes" } }, "id": "op_..." }
+```
+
+`Compact` is a struct variant in `v0.preview.90`; clients must send the empty object form when they have no instructions rather than the older bare string form.
+
+### ContextReport
+
+Request a per-category breakdown of the active session's context-window occupancy (what `/context` sends). Answered with a [`ContextReport`](#contextreport-1) event.
+
+```json
+{ "op": "ContextReport", "id": "op_..." }
+```
+
+### Goal
+
+Set, clear, or report a [goal-driven execution loop](/usage/goal-sessions) on the active session. A set goal keeps the session working — re-running turns and judging the condition after each one — until it is met, judged unreachable, or cleared.
+
+```json
+{ "op": { "Goal": { "Set": "all tests pass" } }, "id": "op_..." }
+{ "op": { "Goal": "Clear" }, "id": "op_..." }
+{ "op": { "Goal": "Status" }, "id": "op_..." }
+```
+
+### AmbientPhrase / AmbientSuggestion
+
+Request an ad-hoc ambient prediction off the conversation's critical path on a cheap model: `AmbientPhrase` predicts a spinner "thinking phrase" for the in-progress draft, and `AmbientSuggestion` predicts a next-prompt suggestion from the last exchange. Both answer with an `Ambient` event; the monotonic `req_id` lets the client discard stale results.
+
+```json
+{ "op": { "AmbientPhrase": { "draft": "refactor the parser to...", "req_id": 3 } }, "id": "op_..." }
+{ "op": { "AmbientSuggestion": { "recent_user": "fix the bug", "recent_agent": "Fixed — the cause was...", "req_id": 7 } }, "id": "op_..." }
 ```
 
 ### Interrupt
@@ -230,42 +304,74 @@ Restore the previously registered local provider configuration after a session-l
 
 #### SessionStart
 
-Emitted when a session is initialized. Contains metadata about the active model, provider, session ID, and working directory. Skills and subagents are delivered separately via `ExtensionRefreshed`.
+Emitted when a session is initialized. It announces the session identity, mutable settings, and the skills and subagents equipped for the session. `ExtensionRefreshed` immediately repeats those capability lists alongside MCP state for clients that replace all extension state from one event.
 
 ```json
 {
   "event": {
     "SessionStart": {
-      "model": { "name": "claude-sonnet-4-6", "max_tokens": 8192 },
-      "provider": "anthropic",
+      "model": { "id": "claude-sonnet-5", "max_tokens": 8192 },
+      "provider": {
+        "id": "anthropic",
+        "display_name": "Anthropic",
+        "base_url": "https://api.anthropic.com/v1"
+      },
       "session_id": "ses_01ARZ...",
-      "cwd": "/home/user/project"
+      "cwd": "/home/user/project",
+      "permission_mode": "strict",
+      "skills": [],
+      "subagents": []
     }
   }
 }
 ```
 
-**SessionInitialized fields:**
+**SessionInfo fields:**
 
 | Field | Type | Description |
 |---|---|---|
 | `model` | `ModelSpec` | Active model specification |
-| `provider` | `string` | Active provider name (e.g. `"anthropic"`) |
+| `provider` | `ProviderSpec` | Active provider (see below) |
 | `session_id` | `Id` | Unique session identifier |
 | `cwd` | `string` | Working directory path |
+| `permission_mode` | `PermissionMode` | Active permission mode (`"strict"`, `"auto"`, or `"yolo"`) |
+| `skills` | `SkillMetadata[]` | Skills the user can invoke in this session. Defaults to an empty list when absent for backward compatibility |
+| `subagents` | `SubagentMetadata[]` | Subagents this session can delegate to. Defaults to an empty list when absent for backward compatibility |
+| `title` | `string?` | The session's [title](/usage/tui#session-title) when one is set — chosen by the user or the client, never derived from the conversation. Omitted from the payload entirely when unset |
+
+The embedded `ModelSpec` uses the model fields documented in the [Catalog Reference](/reference/catalog-reference#model-fields). Since `v0.preview.92`, its optional `supported_efforts` field carries a custom model's accepted effort ladder; it replaces the old output-only `effort_options` field.
+
+**ProviderSpec fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `string` | Provider key, e.g. `"anthropic"` (accepts `name` as a legacy alias) |
+| `display_name` | `string` | Friendly name for display |
+| `base_url` | `string` | Endpoint actually in use for this session — environment overrides can move it away from the catalog default |
+
+The payload type was named `SessionInitialized` before `v0.preview.94` and is now `SessionInfo`. This is a Rust type name only — the event names (`SessionStart`, `SessionUpdated`) and the JSON are unchanged, so no client needs to adapt.
+
+`ProviderSpec` deliberately carries only what a client cannot look up for itself. The provider's model list is not on the wire; it is identical for every session and is published by [`ante catalog`](/reference/cli-reference#ante-catalog). Unknown fields are ignored, so payloads from older daemons that still send `preferred_models` decode fine.
 
 #### SessionUpdated
 
-Emitted when the active session is updated in place (e.g. model changed via `UpdateSession`).
+Emitted when the active session is updated in place (e.g. model changed via `UpdateSession`). Carries the same fields as `SessionStart`.
 
 ```json
 {
   "event": {
     "SessionUpdated": {
-      "model": { "name": "gpt-5.4" },
-      "provider": "openai",
+      "model": { "id": "gpt-5.4" },
+      "provider": {
+        "id": "openai",
+        "display_name": "OpenAI",
+        "base_url": "https://api.openai.com/v1"
+      },
       "session_id": "ses_01ARZ...",
-      "cwd": "/home/user/project"
+      "cwd": "/home/user/project",
+      "permission_mode": "strict",
+      "skills": [],
+      "subagents": []
     }
   }
 }
@@ -273,11 +379,26 @@ Emitted when the active session is updated in place (e.g. model changed via `Upd
 
 #### SessionEnd
 
-Emitted when the session terminates.
+Emitted when the session span closes. Mirrors `TurnEnd`: it carries the session's identity, why it ended, and its final usage accounting.
 
 ```json
-{ "event": "SessionEnd" }
+{
+  "event": {
+    "SessionEnd": {
+      "session_id": "ses_01ARZ...",
+      "reason": "Shutdown",
+      "usage": { "input_tokens": 15000, "output_tokens": 3000 }
+    }
+  }
+}
 ```
+
+**SessionEndReason variants:**
+
+| Variant | Description |
+|---|---|
+| `Replaced` | The session was replaced by a new or resumed session |
+| `Shutdown` | The daemon is shutting down |
 
 ### Turn lifecycle events
 
@@ -317,12 +438,20 @@ Emitted when a turn is paused waiting for user input (e.g. tool approval).
 |---|---|---|
 | `Approval` | `tools: ToolUse[]`, `message: string` | Waiting for tool approval |
 
-#### TurnEnd
+#### TurnResume
 
-Emitted when a turn completes.
+Emitted when the turn resumes after a `TurnPause` (e.g. the approval was answered or a steer arrived), so clients never have to infer resumption from the next tool event.
 
 ```json
-{ "event": { "TurnEnd": { "turn_id": "step_01ARZ...", "status": "Completed" } } }
+{ "event": { "TurnResume": { "turn_id": "step_01ARZ..." } } }
+```
+
+#### TurnEnd
+
+Emitted when a turn completes. `steps` is the number of turn-loop steps attempted before the turn ended.
+
+```json
+{ "event": { "TurnEnd": { "turn_id": "step_01ARZ...", "status": "Completed", "steps": 4 } } }
 ```
 
 **TurnEndStatus variants:**
@@ -331,7 +460,7 @@ Emitted when a turn completes.
 |---|---|---|
 | `Completed` | — | Turn finished successfully |
 | `Interrupted` | `reason?: string` | Turn was interrupted |
-| `Error` | `message: string` | Turn ended with an error |
+| `Error` | `kind?: string`, `headline: string`, `details: string[]` | Turn ended with an error. `kind` is a stable machine-readable LLM error kind when available — notably `"oauth"` means the provider sign-in is missing, expired, or revoked. `headline` is a one-line summary; `details` are expanded cause lines |
 
 ### Message streaming events
 
@@ -445,17 +574,17 @@ Emitted when dialog compaction begins.
 
 #### CompactEnd
 
-Emitted when dialog compaction completes.
+Emitted when dialog compaction completes. `summary` is the text that replaced the compacted history and carries forward as the session's context; it is `null` when compaction failed (history unchanged) or produced no displayable text.
 
 ```json
-{ "event": "CompactEnd" }
+{ "event": { "CompactEnd": { "summary": "The user asked to..." } } }
 ```
 
 ### Extension events
 
 #### ExtensionRefreshed
 
-Emitted when skills, subagents, or MCP servers are refreshed. Sent at least twice during a normal session: once right after `SessionStart` with the initial skills/subagents (and `mcp_servers: []`), and again after MCP warm-up completes in the background with the discovered server and tool list.
+Emitted when skills, subagents, or MCP servers are refreshed. It is sent once immediately after `SessionStart` with the same skills/subagents and `mcp_servers: []`. When MCP servers are configured, a second event follows after warm-up with the discovered servers and tools; with no MCP configuration, the initial event is the only one.
 
 ```json
 {
@@ -496,11 +625,52 @@ Each entry in `mcp_servers` reflects what was actually launched and discovered: 
 
 #### UsageUpdate
 
-Token usage statistics for the session.
+Token usage statistics for the session. `context` is omitted before the first response or when the model context limit is unknown. It carries raw measurements only — `used_tokens` (cache-inclusive window occupancy) and `limit_tokens` (the raw model context limit); any percentage is derived by the client. `usage` may also include `cache_read_tokens` and `cache_creation_tokens` when the provider reports them.
 
 ```json
-{ "event": { "UsageUpdate": { "usage": { "input_tokens": 1500, "output_tokens": 300 } } } }
+{
+  "event": {
+    "UsageUpdate": {
+      "usage": { "input_tokens": 1500, "output_tokens": 300 },
+      "context": { "used_tokens": 1800, "limit_tokens": 200000 }
+    }
+  }
+}
 ```
+
+#### ContextReport
+
+Answer to the [`ContextReport`](#contextreport) operation: a per-category breakdown of the session's context-window occupancy at the time of the request.
+
+```json
+{
+  "event": {
+    "ContextReport": {
+      "system_prompt_tokens": 3200,
+      "system_tools_tokens": 4100,
+      "mcp_tools_tokens": 900,
+      "memory_tokens": 600,
+      "skills_tokens": 450,
+      "messages_tokens": 12000,
+      "used_tokens": 21250,
+      "limit_tokens": 200000,
+      "compact_buffer_tokens": 20000
+    }
+  }
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `system_prompt_tokens` | `u32` | System prompt, excluding the skills and memory sections counted separately |
+| `system_tools_tokens` | `u32` | Built-in tool schemas |
+| `mcp_tools_tokens` | `u32` | MCP tool schemas |
+| `memory_tokens` | `u32` | Project/user instruction files and the auto-memory prompt |
+| `skills_tokens` | `u32` | The available-skills listing |
+| `messages_tokens` | `u32` | Conversation messages — everything not attributed to a category above |
+| `used_tokens` | `u32` | Total context-window occupancy |
+| `limit_tokens` | `u32?` | Model context limit; `null` when unverified |
+| `compact_buffer_tokens` | `u32` | Tokens reserved at the top of the window; auto-compaction triggers once occupancy grows into this reserve |
 
 #### Info
 
@@ -512,14 +682,15 @@ General informational message.
 
 #### InfoBlockStart
 
-Opens a grouped Info entry with a header. Subsequent `InfoBlockAppend` events sharing the same `id` render as tree-indented child lines under it — used for multi-step background notifications (e.g. MCP warm-up) that should visually cluster.
+Opens a grouped Info entry with a header. Subsequent `InfoBlockAppend` events sharing the same `id` render as tree-indented child lines under it — used for multi-step background notifications (e.g. MCP warm-up) that should visually cluster. When `loading` is true the renderer animates a `.`/`..`/`...` suffix on the header until the first `InfoBlockAppend` arrives.
 
 ```json
 {
   "event": {
     "InfoBlockStart": {
       "id": "mcp-warmup-ses_01ARZ...",
-      "header": "Warming up 4 MCP servers in the background — tools will become available as they connect."
+      "header": "Warming up 4 MCP servers in the background — tools will become available as they connect.",
+      "loading": true
     }
   }
 }
@@ -564,11 +735,36 @@ User input recorded for session replay. This variant is written to the persisted
 { "event": { "UserInput": "explain what this project does" } }
 ```
 
+#### ShellOutput
+
+Answer to a `ShellInput` operation: the command that ran and what it produced.
+
+```json
+{
+  "event": {
+    "ShellOutput": {
+      "command": "git status",
+      "stdout": "On branch main...",
+      "stderr": "",
+      "exit_code": 0
+    }
+  }
+}
+```
+
+#### Ambient
+
+An ephemeral ambient hint produced off the main conversation on a cheap model — a predicted "thinking phrase" for the current draft, or a suggested next prompt shown as input ghost text. Requested with the `AmbientPhrase` / `AmbientSuggestion` operations; `req_id` lets clients drop superseded results. Never persisted to the event log.
+
+```json
+{ "event": { "Ambient": { "kind": "PromptSuggestion", "req_id": 7, "text": "run the tests" } } }
+```
+
 ### Offline mode and the protocol
 
 Local-model management (engine installation, model discovery, llama-server lifecycle) is **client-side**. It is driven through the in-process `OfflineSubsystem` API, not through the daemon protocol. The only daemon-facing surface for offline mode is `RegisterLocalProvider` / `RestoreLocalProvider` — the client starts a llama-server itself, then registers its port (and an optional `ModelSpec`) with the daemon.
 
-See the [Offline Mode](/experimental/offline) page for the user-facing flows and the `--offline-model` CLI flag.
+See the [Offline Mode](/local/offline) page for the user-facing flows and the `--offline-model` CLI flag.
 
 ## Transport
 
@@ -591,13 +787,22 @@ For external clients using `ante serve` (or `ante serve --stdio`), `StdioTranspo
 - **`Evt::Goodbye` received** → Transport exits
 - **JSON parse errors** → An `Evt::Error` is sent back on stdout
 
+### Unix socket transport
+
+For clients that dial a host someone else is running, `ante serve --sock [PATH]` listens on a Unix domain socket (default `run/serve.sock` in the Ante home) and exchanges the same JSONL protocol over the stream:
+
+- Each client gets its own connection and at most one active session on the shared host
+- `Op::Shutdown` ends only that connection; the host keeps accepting new ones
+- The host process exits on `SIGINT` or `SIGTERM`
+- Ownership is an exclusive lock on a `.lock` file beside the socket, so a second host on the same path refuses to start rather than displacing the live one; a stale socket left by a crashed host holds no lock and is replaced
+
 ### WebSocket transport
 
 For networked or browser-based clients using `ante serve --ws <ADDR>`, `WsTransport` exchanges the same JSONL protocol over WebSocket frames:
 
-- Each WebSocket connection gets its own daemon instance
+- Each WebSocket client gets its own connection and session on the shared host
 - Messages are the same `OpMsg` and `EventMsg` JSON objects, sent as text frames
-- **Client disconnect** → Daemon instance shuts down, server accepts next connection
+- **Client disconnect** → That connection and session shut down; the server accepts the next client
 - **`Op::Shutdown` received** → Connection and server both exit
 - The server loops accepting new connections until a `Shutdown` is received
 

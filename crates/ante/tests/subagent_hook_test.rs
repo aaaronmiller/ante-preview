@@ -10,9 +10,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use agent_sdk::event::EventBus;
-use agent_sdk::hooks::InvokeSubAgent;
-use agent_sdk::hooks::registry::HookRegistry;
+use ante_sdk::event::EventBus;
+use ante_sdk::hooks::InvokeSubAgent;
+use ante_sdk::hooks::registry::HookRegistry;
 use ante_protocol_shape::{
     BasePayload, EventPayload, EventType,
     SubAgentPayload,
