@@ -37,7 +37,7 @@ use ante_sdk::memory::server::MemoryServer;
 use ante_sdk::memory::store::MemoryStore;
 use ante_sdk::router::ModelRouter;
 use ante_sdk::sessions::SessionManager;
-use ante_sdk::settings::load_settings;
+use ante_sdk::settings::{apply_project_layer, load_settings, load_settings_with_profile};
 use ante_sdk::ui::diagram::render;
 use ante_sdk::ui::todo::TodoList;
 use ante_protocol_shape::payload::RiskLevel as ProtocolRiskLevel;
@@ -89,6 +89,9 @@ struct Cli {
     /// Path to Claude CLI binary
     #[arg(long)]
     cli_path: Option<PathBuf>,
+    /// Settings profile: use ~/.ante/<name>.settings.json (ANTE_PROFILE also works)
+    #[arg(long, global = true)]
+    profile: Option<String>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -1456,6 +1459,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 hitl_mode,
                 risk_threshold,
                 no_router,
+                cli.profile,
             )
             .await?;
         }
@@ -1470,6 +1474,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cli.cli_path,
                 cli.continue_session,
                 cli.resume,
+                cli.profile,
             )
             .await?;
         }
@@ -1477,7 +1482,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             handle_sessions(command)?;
         }
         Commands::Doctor => {
-            handle_doctor()?;
+            handle_doctor(cli.profile)?;
         }
         Commands::Memory { command } => {
             handle_memory_direct(command)?;
@@ -1511,6 +1516,23 @@ fn handle_init(force: bool) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Load user/profile settings, then layer the nearest `.ante/settings.json`.
+fn load_effective_settings(profile: Option<&str>) -> Settings {
+    let env_profile = std::env::var("ANTE_PROFILE").ok();
+    let selected = profile.map(str::to_string).or(env_profile);
+    let mut settings = match load_settings_with_profile(selected.as_deref()) {
+        Ok(s) => s,
+        Err(_) => {
+            eprintln!("[ante] Using default settings");
+            Settings::default()
+        }
+    };
+    if let Ok(cwd) = std::env::current_dir() {
+        apply_project_layer(&mut settings, &cwd);
+    }
+    settings
+}
+
 async fn handle_query(
     prompt: Vec<String>,
     model: Option<String>,
@@ -1519,6 +1541,7 @@ async fn handle_query(
     hitl_mode: Option<String>,
     risk_threshold: Option<String>,
     no_router: bool,
+    profile: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let prompt_text = if prompt.is_empty() {
         eprintln!("Error: no prompt provided");
@@ -1531,13 +1554,7 @@ async fn handle_query(
     let _ = first_run_setup(false);
 
     // Load settings
-    let settings = match load_settings() {
-        Ok(s) => s,
-        Err(_) => {
-            eprintln!("[ante] Using default settings");
-            Settings::default()
-        }
-    };
+    let settings = load_effective_settings(profile.as_deref());
 
     // Initialize context
     let mut ctx = AgentContext::initialize(settings);
@@ -1727,18 +1744,13 @@ async fn handle_repl(
     cli_path: Option<PathBuf>,
     continue_session: bool,
     resume: Option<String>,
+    profile: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Run first-run setup if needed
     let _ = first_run_setup(false);
 
     // Load settings
-    let settings = match load_settings() {
-        Ok(s) => s,
-        Err(_) => {
-            eprintln!("[ante] Using default settings");
-            Settings::default()
-        }
-    };
+    let settings = load_effective_settings(profile.as_deref());
 
     // Initialize context
     let mut ctx = AgentContext::initialize(settings);
@@ -2025,7 +2037,7 @@ fn handle_todo_direct(command: TodoCommands) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-fn handle_doctor() -> Result<(), Box<dyn std::error::Error>> {
+fn handle_doctor(profile: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     let _ = first_run_setup(false);
     println!("Ante doctor");
 
@@ -2045,12 +2057,34 @@ fn handle_doctor() -> Result<(), Box<dyn std::error::Error>> {
         "opencode found in PATH",
     );
 
-    let settings = load_settings().ok();
+    let cli_profile = profile.or_else(|| std::env::var("ANTE_PROFILE").ok());
+    let settings = load_settings_with_profile(cli_profile.as_deref()).ok();
     report_check(
         "settings",
         settings.is_some(),
         "~/.ante/settings.json loadable",
     );
+    let (project_detail, project_ok) = match std::env::current_dir() {
+        Ok(cwd) => {
+            let mut probe = settings.clone().unwrap_or_default();
+            let outcome = apply_project_layer(&mut probe, &cwd);
+            match outcome.path {
+                Some(p) => {
+                    let mut bits = vec![format!("{}", p.display())];
+                    if !outcome.dropped.is_empty() {
+                        bits.push(format!("dropped: {}", outcome.dropped.join(", ")));
+                    }
+                    if !outcome.ignored.is_empty() {
+                        bits.push(format!("ignored: {}", outcome.ignored.join(", ")));
+                    }
+                    (bits.join("; "), true)
+                }
+                None => ("no .ante/settings.json found".to_string(), true),
+            }
+        }
+        Err(_) => ("cannot determine working directory".to_string(), false),
+    };
+    report_check("project", project_ok, &project_detail);
 
     let agents_dir = resolve_agents_dir(None)?;
     let agent_registry = AgentRegistry::load(&agents_dir).ok();
