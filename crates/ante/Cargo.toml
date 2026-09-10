@@ -6,6 +6,7 @@ description = "Ante — extensible agent runtime wrapping Claude Code"
 license = "Apache-2.0"
 
 [dependencies]
+ante-acp = { path = "../../ante-acp" }
 ante-sdk = { path = "../ante-sdk" }
 ante-exec = { path = "../exec" }
 tokio = { version = "1", features = ["full"] }

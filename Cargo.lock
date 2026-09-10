@@ -65,11 +65,23 @@ dependencies = [
 name = "ante"
 version = "0.1.0"
 dependencies = [
+ "ante-acp",
  "ante-exec",
  "ante-protocol-shape",
  "ante-sdk",
  "chrono",
  "clap",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "ante-acp"
+version = "0.1.0"
+dependencies = [
+ "ante-sdk",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

@@ -96,6 +96,9 @@ pub struct SessionHeader {
     pub model_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<String>,
+    /// Display title chosen by the operator (`/rename`). Absent on old files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// A message envelope (wraps the inner message for the JSONL line).
@@ -172,6 +175,9 @@ pub struct SessionIndexEntry {
     pub message_count: usize,
     /// Total tokens used (approximate).
     pub total_tokens: u64,
+    /// Display title (`/rename`). Defaults to `None` for old index files.
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 /// The on-disk index format.
@@ -263,6 +269,7 @@ struct ActiveSession {
     cwd: PathBuf,
     message_count: usize,
     total_tokens: u64,
+    title: Option<String>,
 }
 
 impl SessionManager {
@@ -321,6 +328,7 @@ impl SessionManager {
             provider: provider.map(String::from),
             model_id: model_id.map(String::from),
             thinking_level: Some("normal".into()),
+            title: None,
         };
 
         let line = serde_json::to_string(&SessionLine::Session(header))?;
@@ -338,6 +346,7 @@ impl SessionManager {
             cwd: cwd.to_path_buf(),
             message_count: 0,
             total_tokens: 0,
+            title: None,
         };
 
         *lock_or_recover(&self.writer) = Some(SessionFileWriter {
@@ -408,6 +417,46 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Set (or clear) the active session's display title (`/rename`).
+    ///
+    /// Rewrites the session header line in place and updates the index, so
+    /// the title survives resume. Old files without a title decode fine.
+    pub fn set_title(&self, title: Option<String>) -> io::Result<()> {
+        let (session_id, rel_file_path) = {
+            let mut guard = lock_or_recover(&self.active);
+            let Some(active) = guard.as_mut() else {
+                return Err(io::Error::new(io::ErrorKind::NotConnected, "no active session"));
+            };
+            active.title.clone_from(&title);
+            (active.session_id.clone(), active.rel_file_path.clone())
+        };
+        let path = self.sessions_root.join(&rel_file_path);
+        let content = fs::read_to_string(&path)?;
+        let mut lines = content.lines();
+        let first = lines.next().unwrap_or("");
+        let mut header: SessionHeader = serde_json::from_str(first)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        header.title = title.clone();
+        let mut out = serde_json::to_string(&SessionLine::Session(header))?;
+        for line in lines {
+            out.push('\n');
+            out.push_str(line);
+        }
+        out.push('\n');
+        fs::write(&path, out)?;
+        let index_path = self.index_path();
+        let mut index = SessionIndex::load(&index_path);
+        if let Some(entry) = index
+            .sessions
+            .iter_mut()
+            .find(|e| e.session_id == session_id)
+        {
+            entry.title = title;
+        }
+        index.save(&index_path)?;
+        Ok(())
+    }
+
     /// End the active session, finalize the index entry, and close the file.
     pub fn end(&self, total_tokens: u64) -> io::Result<()> {
         let active = {
@@ -431,6 +480,7 @@ impl SessionManager {
                 model_id: active.model_id,
                 message_count: active.message_count,
                 total_tokens,
+                title: active.title,
             });
             index.save(&self.index_path())?;
         }
@@ -874,5 +924,75 @@ mod tests {
         assert_eq!(change_line["type"], "model_change");
         assert_eq!(change_line["provider"], "anthropic");
         assert_eq!(change_line["modelId"], "claude-3");
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    #[test]
+    fn set_title_persists_to_header_and_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::new(dir.path().to_path_buf());
+        let id = mgr
+            .start(Path::new("/home/user/project"), None, None)
+            .unwrap();
+        mgr.set_title(Some("My task".into())).unwrap();
+        // Header line on disk carries the title (the index only fills in at end()).
+        let safe = path_to_safe_name(Path::new("/home/user/project"));
+        let mut files: Vec<PathBuf> = fs::read_dir(dir.path().join(&safe))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .collect();
+        assert_eq!(files.len(), 1);
+        let content = fs::read_to_string(files.pop().unwrap()).unwrap();
+        let header: SessionHeader =
+            serde_json::from_str(content.lines().next().unwrap()).unwrap();
+        assert_eq!(header.title.as_deref(), Some("My task"));
+        mgr.end(0).unwrap();
+        let sessions = mgr.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].title.as_deref(), Some("My task"));
+        let lines = mgr.read_session(&id).unwrap().unwrap();
+        match &lines[0] {
+            SessionLine::Session(h) => assert_eq!(h.title.as_deref(), Some("My task")),
+            other => panic!("expected header, got {other:?}"),
+        }
+        // Clearing works too.
+        let _id2 = mgr
+            .start(Path::new("/home/user/project"), None, None)
+            .unwrap();
+        mgr.set_title(Some("Temp".into())).unwrap();
+        mgr.set_title(None).unwrap();
+        mgr.end(0).unwrap();
+        let sessions = mgr.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions.iter().all(|s| s.title.as_deref() != Some("Temp")));
+    }
+
+    #[test]
+    fn title_absent_without_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::new(dir.path().to_path_buf());
+        mgr.start(Path::new("/home/user/project"), None, None)
+            .unwrap();
+        mgr.end(0).unwrap();
+        let sessions = mgr.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert!(sessions[0].title.is_none());
+    }
+
+    #[test]
+    fn legacy_header_and_index_without_title_decode() {
+        let header: SessionHeader =
+            serde_json::from_str(r#"{"id":"x","timestamp":"t","cwd":"/p"}"#).unwrap();
+        assert!(header.title.is_none());
+        let entry: SessionIndexEntry = serde_json::from_str(
+            r#"{"sessionId":"x","project":"/p","safePath":"s","filePath":"f","startedAt":"t","messageCount":0,"totalTokens":0}"#,
+        )
+        .unwrap();
+        assert!(entry.title.is_none());
     }
 }

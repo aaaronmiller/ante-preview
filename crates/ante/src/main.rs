@@ -12,6 +12,7 @@
 //!   ante diagram <file>  — Render Mermaid file to ASCII
 
 mod mcp_server;
+mod serve;
 mod status;
 
 use std::fs;
@@ -179,6 +180,16 @@ enum Commands {
         #[arg(hide = true)]
         stub: Vec<String>,
     },
+
+    /// Host sessions over the JSONL Op/Event protocol on stdio
+    Serve {
+        /// Accepted for upstream-CLI compatibility; transport is always stdio
+        #[arg(long)]
+        stdio: bool,
+    },
+
+    /// Speak the Agent Client Protocol over stdio (editor integrations)
+    Acp,
 }
 
 #[derive(Subcommand)]
@@ -1151,6 +1162,7 @@ async fn handle_command(
             eprintln!("  /done <id>          Mark todo done");
             eprintln!("  /diagram <mermaid>  Render a Mermaid diagram");
             eprintln!("  /budget             Show budget usage");
+            eprintln!("  /rename <title>     Set session title (bare /rename clears)");
             eprintln!("  /interrupt          Interrupt current generation");
             eprintln!("  /info               Show Claude session info");
             eprintln!("  /help               Show this help");
@@ -1271,6 +1283,27 @@ async fn handle_command(
         }
         "/info" => {
             eprintln!("Claude session active.");
+        }
+        "/rename" => {
+            if let Some(ref sessions) = ctx.sessions {
+                let title = if arg.is_empty() {
+                    None
+                } else {
+                    Some(arg.to_string())
+                };
+                match sessions.set_title(title) {
+                    Ok(()) => {
+                        if arg.is_empty() {
+                            eprintln!("Title cleared.");
+                        } else {
+                            eprintln!("Title set: {arg}");
+                        }
+                    }
+                    Err(e) => eprintln!("Cannot rename: {e}"),
+                }
+            } else {
+                eprintln!("No active session.");
+            }
         }
         _ => {
             eprintln!("Unknown command: {cmd}. Type /help for available commands.");
@@ -1501,6 +1534,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Spawned as a child process by the main Ante agent and
             // communicates via JSON-RPC 2.0 over stdio.
             mcp_server::run_mcp_server()?;
+        }
+        Commands::Serve { stdio: _ } => {
+            serve::run_serve().await?;
+        }
+        Commands::Acp => {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            let sessions_root = PathBuf::from(home).join(".ante").join("sessions");
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            ante_acp::agent::run_claude_stdio(sessions_root, cwd).await?;
         }
     }
 
@@ -1915,9 +1957,10 @@ fn handle_sessions(command: SessionCommands) -> Result<(), Box<dyn std::error::E
                 };
                 let model = s.model_id.as_deref().unwrap_or("?");
                 let msgs = s.message_count;
+                let name = s.title.as_deref().unwrap_or(&s.project);
                 println!(
                     "  {:<38}  {:25}  {:12}  {} msgs  {}",
-                    s.session_id, s.project, model, msgs, dur
+                    s.session_id, name, model, msgs, dur
                 );
             }
             println!();
@@ -1934,6 +1977,7 @@ fn handle_sessions(command: SessionCommands) -> Result<(), Box<dyn std::error::E
                     let mut model = "?".to_string();
                     let mut cwd = "?".to_string();
                     let mut started = "?".to_string();
+                    let mut title: Option<String> = None;
 
                     let msg_lines: Vec<String> = lines
                         .iter()
@@ -1943,6 +1987,7 @@ fn handle_sessions(command: SessionCommands) -> Result<(), Box<dyn std::error::E
                                 model = h.model_id.clone().unwrap_or_default();
                                 cwd = h.cwd.clone().unwrap_or_default();
                                 started = h.timestamp.clone();
+                                title = h.title.clone();
                                 None
                             }
                             ante_sdk::sessions::SessionLine::Message(msg) => {
@@ -1974,6 +2019,9 @@ fn handle_sessions(command: SessionCommands) -> Result<(), Box<dyn std::error::E
 
                     println!("Session: {}", id);
                     println!("  Project:  {cwd}");
+                    if let Some(ref t) = title {
+                        println!("  Title:    {t}");
+                    }
                     println!("  Provider: {provider}");
                     println!("  Model:    {model}");
                     println!("  Start:    {started}");
@@ -1986,7 +2034,16 @@ fn handle_sessions(command: SessionCommands) -> Result<(), Box<dyn std::error::E
             }
         }
         SessionCommands::Resume { id } => {
-            eprintln!("[ante] To resume session {id}, run:");
+            let title = mgr
+                .list_sessions()
+                .ok()
+                .and_then(|all| all.into_iter().find(|e| e.session_id == id))
+                .and_then(|e| e.title);
+            if let Some(t) = title {
+                eprintln!("[ante] To resume session {id} (\"{t}\"), run:");
+            } else {
+                eprintln!("[ante] To resume session {id}, run:");
+            }
             eprintln!("  ante --resume {id}");
             eprintln!();
             eprintln!("(Or use `ante --continue` to recover the latest session");
