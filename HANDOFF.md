@@ -88,3 +88,37 @@ Restart the harness (reseats the dead shell cwd), then run plan A steps 1–2 an
 inspect the 6 conflicts. If they match §3, finish the merge. If anything looks
 materially different (different count, new UU files), stop and re-audit before
 resolving — it means upstream moved again since `1b2138a`.
+
+## 7. Outcome (2026-09-06, executed)
+
+- Merged on branch `merge/upstream-v0.94`, committed as `951e962`, pushed to
+  `origin` (aaaronmiller/ante-preview). Branch tracks
+  `origin/merge/upstream-v0.94`. No PR opened yet.
+- Extra fixes beyond the predicted 6 conflicts: `agent_sdk` -> `ante_sdk`
+  import rename across `crates/ante` (dep-key rename changes the extern name);
+  router fallback tail now returns `AllFallbacksExhausted` (was unreachable
+  variant + failing spec test `fallback_exhausts_retries` — pre-existing, the
+  old fork HEAD never compiled so it never ran green).
+- Gates: `cargo build --workspace` clean; `cargo test --workspace` 329 passed,
+  0 failed, 14 suites (2 x `ignore` are ` ```ignore ` doc snippets, not tests).
+- Plan B (re-implementation) not needed.
+- Watch item: merged README now describes upstream-binary features our fork
+  binary lacks (offline GGUF, gateway, `ante update`). Needs a fork-features
+  README pass once config adoption (§8) lands.
+
+## 8. Config and features to adopt from upstream (surveyed, not yet built)
+
+1. `--profile` + `curated/` (pi, plan, harbor skill) — already in tree, our
+   binary has no `--profile` flag. Wire into settings loader. Small.
+2. Project `.ante/settings.json` narrow-only layering — our `settings.rs` has
+   no layering. Medium.
+3. `catalog.json` provider layer; port our hardcoded model pool onto
+   `crates/ante-llm` provider profiles. Strategic, kills Claude-only transport
+   assumptions in the router.
+4. Session titles (`/rename`) — evaluate against our `SessionManager` index.
+5. `ante serve --sock` + `connect()` endpoint grammar — present in merged
+   `ante-sdk`; expose from our binary for editor plugins.
+6. `ante-acp` crate (Agent Client Protocol, e.g. Zed integration) — evaluate;
+   leave out of our workspace unless adopted (upstream covers it per-crate).
+7. Skip: `ante update` channels (needs release infra), offline llama.cpp
+   (needs the private core).
