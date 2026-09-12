@@ -18,6 +18,8 @@
 
 **Ante** is an extensible agent runtime wrapping Claude Code. It adds memory, hooks, tools, sessions, MCP servers, sub-agents, model routing, HITL approval, and wiki-memory to the upstream CLI — without losing any Claude Code capability.
 
+> **Fork notes (aaaronmiller/ante-preview):** the `ante` binary in this repo wraps the Claude Code CLI (and OpenCode for `agents run`) — build it with `cargo build -p ante`; it needs `claude` on PATH. Upstream-marked sections below (offline GGUF engine, `ante gateway`, `ante update`, prebuilt download, benchmark/footprint figures) describe Antigma Labs' release binary, not fork builds. Fork additions: `--profile` / `ANTE_PROFILE` settings profiles, project `.ante/settings.json` layering (`ante doctor` shows the `project` row), `/rename` session titles, `ante serve --stdio` (JSONL Op/Event host), `ante acp` (Agent Client Protocol adapter).
+
 > [!WARNING]
 > **Beta preview:** Expect breaking changes and incomplete functionality. macOS and Linux only; on Windows, we suggest [WSL](https://learn.microsoft.com/windows/wsl/install).
 
@@ -423,6 +425,7 @@ On REPL startup, Ante displays a feature summary:
 | `/help` | Show available commands |
 | `/budget` | Show token/cost usage this session |
 | `/interrupt` | Interrupt the current Claude response |
+| `/rename <title>` | Set session title (bare `/rename` clears) |
 
 ## Project Structure
 
@@ -430,7 +433,8 @@ On REPL startup, Ante displays a feature summary:
 crates/
   ante/                     # CLI binary (main entry point)
     src/main.rs             # CLI parsing, mode dispatch, agent context
-  agent-sdk/                # Core library
+    src/serve.rs            # `ante serve` JSONL Op/Event host
+  ante-sdk/                 # Core library (renamed from agent-sdk upstream)
     src/
       agents/               # Sub-agent loader & broker protocol
       event.rs              # EventBus, EventPayload types
@@ -440,12 +444,15 @@ crates/
       mcp/                  # MCP client, registry, tool discovery
       memory/               # MemoryStore, MemoryServer (embedded MCP)
       router.rs             # Model routing engine
-      sessions/             # SessionManager, JSONL recording, recovery
-      settings.rs           # Settings loader (JSON)
+      sessions/             # SessionManager, JSONL recording, titles, recovery
+      settings.rs           # Settings loader (profiles, project layer, JSON)
       todo.rs               # TodoList
       ui/                   # Diagram renderer, status bar
-      claude.rs             # Claude CLI connection
-  protocol-shape/           # Shared types (Settings, EventType, etc.)
+      claude/               # Claude CLI connection
+  ante-llm/                 # Provider effort ladders (upstream; not wired to our router yet)
+  protocol-shape/           # Shared types + Op/Event wire protocol
+  exec/                     # Standalone process execution
+ante-acp/                   # ACP adapter (`ante acp`, editor integrations)
 ```
 
 ## Building from Source
@@ -456,7 +463,7 @@ crates/
 | [Interactive TUI](https://docs.antigma.ai/usage/tui) | `ante` | day-to-day work in the terminal |
 | [Headless](https://docs.antigma.ai/usage/headless) | `ante -p "..."` | one-shot tasks, scripts, CI |
 | [Server](https://docs.antigma.ai/usage/serve) | `ante serve` | editor plugins and integrations, over a JSONL protocol |
-| [Gateway](https://docs.antigma.ai/usage/gateway) | `ante gateway` | running Ante as a Slack or Discord bot |
+| [Gateway](https://docs.antigma.ai/usage/gateway) | `ante gateway` | running Ante as a Slack or Discord bot (upstream release binary; not in fork builds) |
 
 ### Headless examples
 
@@ -466,16 +473,13 @@ cargo build --release -p ante
 ./target/release/ante
 ```
 
-### Update Ante
+### Update Ante (fork)
+
+No self-updater in source builds. Update with git, then rebuild:
 
 ```sh
-ante update
-
-# One-off update from a different channel
-ante update --channel nightly
-
-# Roll back or pin to an exact release
-ante update --version v0.preview.93
+git pull --ff-only
+cargo build --release -p ante
 ```
 
 ## One binary, many agents
@@ -507,7 +511,7 @@ Bring your own API key, subscription, or local model; no account required, not e
 | Grok (xAI) | Grok 4.5 |
 | DeepSeek | DeepSeek V4 |
 | Open Router | Any Open Router model, over three wire styles |
-| Local (GGUF) | Any GGUF model via built-in llama.cpp |
+| Local (GGUF) | Any GGUF model via built-in llama.cpp (upstream release binary; not in fork builds) |
 | ...and more | Zai, Ali Coding Plan, Antix, OpenAI-compatible |
 
 **A config layer for everything else.** Your own proxy, gateway, or inference engine is one entry in `~/.ante/catalog.json`: a `wire_style` (Ante speaks four API dialects), an auth style (bearer, header, or query, from an env var or OAuth), plus `http_headers` and `extra_body` for whatever else the endpoint expects. The combinations cover most setups without a plugin or a code change:
@@ -608,7 +612,7 @@ But our vision is much bigger: millions of agents self-organizing and communicat
 <details>
 <summary><b>Can I run Ante completely offline?</b></summary>
 
-Yes. Ante has a built-in llama.cpp engine that runs GGUF models locally. It handles engine installation, model discovery, and memory management automatically. No API keys or internet connection required.
+The upstream release binary can, via its built-in llama.cpp engine. Fork builds from this repo need a provider: a Claude subscription or API key (Anthropic, OpenRouter, etc.).
 </details>
 
 <details>
@@ -636,7 +640,8 @@ The prebuilt `ante` binary is free to use — including commercially — during
 the alpha preview under the [Binary Preview Terms](BINARY-TERMS.md). The core
 harness is currently developed in a private repository and shipped as a
 binary; the SDK and protocol surface you build against here will remain
-permissively licensed.
+permissively licensed. Building from this fork produces a plain Apache-2.0
+source build; the Binary Preview Terms cover only Antigma's prebuilt downloads.
 
 For development:
 
