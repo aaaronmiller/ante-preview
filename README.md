@@ -117,6 +117,7 @@ These three properties are one design decision. An agent you can **verify**, **a
 git clone <url> ante-fork
 cd ante-fork
 cargo build --release -p ante
+mv ~/.local/bin/ante ~/.local/bin/ante.prev 2>/dev/null; ln -sf "$PWD/target/release/ante" ~/.local/bin/ante; hash -r
 
 # First-run setup (creates ~/.ante/ and shared wiki memory)
 ./target/release/ante init
@@ -176,8 +177,10 @@ Ante uses the wiki-memory repo when it is installed at `~/code/wiki-memory`; oth
 | `ante todo add/list/done/clear` | Direct | Direct todo list operations |
 | `ante sessions list/show/resume` | Direct | Session management (list, inspect, get resume command) |
 | `ante agents list/run` | Direct | Sub-agent registry and dispatch |
-| `ante doctor` | Direct | Readiness check for CLI tools, settings, parseable agents, hooks, internal MCP tools, sessions, and wiki-memory |
+| `ante doctor` | Direct | Readiness check for CLI tools, settings (incl. the `project` layer row), parseable agents, hooks, internal MCP tools, sessions, and wiki-memory |
 | `ante diagram <mermaid>` | Direct | Render Mermaid to terminal ASCII |
+| `ante serve [--stdio]` | **Serve** | JSONL Op/Event protocol host on stdio (editor plugins, integrations) |
+| `ante acp` | **ACP** | Agent Client Protocol adapter on stdio (Zed etc.) |
 
 ## All Arguments
 
@@ -194,6 +197,7 @@ Ante uses the wiki-memory repo when it is installed at `~/code/wiki-memory`; oth
 | `--risk-threshold <level>` | Auto-approval ceiling: `safe`, `low`, `medium`, `high`, `critical` |
 | `--no-router` | Disable dynamic model routing (uses Claude's default) |
 | `--cli-path <path>` | Path to Claude CLI binary |
+| `--profile <name>` | Settings profile (`~/.ante/<name>.settings.json`; `ANTE_PROFILE` also works) |
 | `-h`, `--help` | Print help |
 | `-V`, `--version` | Print version |
 
@@ -208,6 +212,7 @@ Ante uses the wiki-memory repo when it is installed at `~/code/wiki-memory`; oth
 | `--hitl-mode <mode>` | HITL mode |
 | `--risk-threshold <level>` | Risk threshold |
 | `--no-router` | Disable model routing |
+| `--profile <name>` | Settings profile (same as global) |
 
 ### Init mode (`ante init`)
 
@@ -461,7 +466,7 @@ ante-acp/                   # ACP adapter (`ante acp`, editor integrations)
 | Mode | Command | Use it for |
 |------|---------|------------|
 | [Interactive TUI](https://docs.antigma.ai/usage/tui) | `ante` | day-to-day work in the terminal |
-| [Headless](https://docs.antigma.ai/usage/headless) | `ante -p "..."` | one-shot tasks, scripts, CI |
+| [Headless](https://docs.antigma.ai/usage/headless) | `ante query "..."` | one-shot tasks, scripts, CI |
 | [Server](https://docs.antigma.ai/usage/serve) | `ante serve` | editor plugins and integrations, over a JSONL protocol |
 | [Gateway](https://docs.antigma.ai/usage/gateway) | `ante gateway` | running Ante as a Slack or Discord bot (upstream release binary; not in fork builds) |
 
